@@ -104,13 +104,16 @@ fi
 bridged || { echo "Steam's local ports could not be bridged: is Steam running and signed in?" >&2; exit 1; }
 
 # The live war, now, while there is a network (Wine sees / as Z:). A failure is not fatal: the session then serves the
-# last war fetched, or HellForge's built-in one.
-backend="$INSTALL/app/backend/HellForge.LocalBackend.exe"
-cache="Z:$(printf '%s' "$INSTALL/live-war.json" | tr '/' '\\')"
-if timeout 60 "$PROTON" run "$backend" fetch-live-war "$cache"; then echo "Fetched the live galactic war."
-else echo "Could not fetch the live galactic war; the session serves the last one fetched (or the built-in war)." >&2; fi
-# (proton can return before a Windows program ends: the fetch finishes before the namespace is entered)
-for _ in $(seq 1 30); do pgrep -f "LocalBackend.exe fetch-live-war" >/dev/null || break; sleep 1; done
+# last war fetched, or HellForge's built-in one. The ownership probe does not need the war fetch and skips it so the
+# probe's bounded timeout covers only starting Proton and checking Steam.
+if [ "${HELLFORGE_SKIP_LIVE_WAR:-}" != 1 ]; then
+  backend="$INSTALL/app/backend/HellForge.LocalBackend.exe"
+  cache="Z:$(printf '%s' "$INSTALL/live-war.json" | tr '/' '\\')"
+  if timeout 60 "$PROTON" run "$backend" fetch-live-war "$cache"; then echo "Fetched the live galactic war."
+  else echo "Could not fetch the live galactic war; the session serves the last one fetched (or the built-in war)." >&2; fi
+  # (proton can return before a Windows program ends: the fetch finishes before the namespace is entered)
+  for _ in $(seq 1 30); do pgrep -f "LocalBackend.exe fetch-live-war" >/dev/null || break; sleep 1; done
+fi
 
 # Run through bash, so the scripts work without their executable bit (lost when copied from Windows or unpacked by setup).
 bash "$here/hellforge-offline.sh" bash "$here/hf-inner.sh" "$@"
