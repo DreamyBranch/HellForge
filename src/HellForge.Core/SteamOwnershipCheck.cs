@@ -70,4 +70,52 @@ public static class SteamOwnershipCheck
         if (File.Exists(report)) File.Copy(report, evidencePath, overwrite: true);
         return process.ExitCode;
     }
+
+    // Linux setup runs the same probe through the installation's wrapper and Proton. The wrapper keeps Steam bridged,
+    // performs its namespace self-test, and waits for the probe process to exit.
+    public static int RunProbeThroughLinuxWrapper(string wrapper, string proton, string installRoot, string prefix, string steamRoot,
+        string probe, string steamApi, string workRoot, string evidencePath, TimeSpan timeout)
+    {
+        if (!File.Exists(proton)) throw new InvalidDataException("Proton was not found in Steam; install a Proton version or set PROTON.");
+        var expected = SupportedBuild.Current.Files.Single(f => f.Path == "bin/steam_api64.dll");
+        if (!File.Exists(steamApi) || new FileInfo(steamApi).Length != expected.Size ||
+            !SupportedBuild.Sha1(steamApi).Equals(expected.Sha1, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The ownership check needs the supported build's own steam_api64.dll: " + steamApi);
+        if (!File.Exists(probe)) throw new InvalidDataException("The Steam ownership probe is missing (" + probe + "): reinstall HellForge.");
+
+        var run = Directory.CreateDirectory(Path.Combine(workRoot, Guid.NewGuid().ToString("N"))).FullName;
+        var library = Path.Combine(run, "steam_api64.dll");
+        File.Copy(steamApi, library);
+        File.WriteAllText(Path.Combine(run, "steam_appid.txt"), AppId.ToString(CultureInfo.InvariantCulture) + "\n");
+        string hash;
+        using (var stream = File.OpenRead(library)) hash = Convert.ToHexString(SHA256.HashData(stream));
+        var report = Path.Combine(run, "result.json");
+        var start = new ProcessStartInfo("bash") { WorkingDirectory = installRoot, UseShellExecute = false, CreateNoWindow = true };
+        start.ArgumentList.Add(wrapper);
+        start.ArgumentList.Add(WinePath.ToWinePath(probe, prefix));
+        start.ArgumentList.Add(WinePath.ToWinePath(library, prefix));
+        start.ArgumentList.Add(hash);
+        start.ArgumentList.Add(WinePath.ToWinePath(report, prefix));
+        start.Environment["INSTALL"] = installRoot;
+        start.Environment["PROTON"] = proton;
+        start.Environment["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = steamRoot;
+        start.Environment["STEAM_COMPAT_DATA_PATH"] = prefix;
+        start.Environment["HELLFORGE_WORKING_DIRECTORY"] = run;
+        using var process = Process.Start(start) ?? throw new InvalidDataException("The Linux Steam ownership check did not start.");
+        if (!process.WaitForExit((int)timeout.TotalMilliseconds))
+        {
+            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            throw new InvalidDataException("The Steam ownership check timed out.");
+        }
+        if (File.Exists(report)) File.Copy(report, evidencePath, overwrite: true);
+        return File.Exists(report) ? RunProbeReportExit(report) : process.ExitCode;
+    }
+
+    static int RunProbeReportExit(string report)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(report));
+        return document.RootElement.ValueKind == JsonValueKind.Object &&
+            document.RootElement.TryGetProperty("localClientOwnershipConfirmed", out var confirmed) &&
+            confirmed.ValueKind == JsonValueKind.True ? 0 : 1;
+    }
 }

@@ -1,0 +1,33 @@
+name: Build Linux package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Require the text-only Steam export manifest
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath 'steam-export-manifest.json')) {
+            throw 'Missing steam-export-manifest.json. Generate it from the supported game DLL with the documented local command, commit only the JSON, and push it first.'
+          }
+      - name: Build package
+        shell: pwsh
+        run: ./scripts/Package-HellForge.ps1 -SteamExports steam-export-manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HellForge-Linux-package
+          path: |
+            artifacts/package/HellForge-Linux.zip
+            artifacts/engine-package/hellforge-engine-*.zip
+            artifacts/package/HellForge-Setup.exe
+          if-no-files-found: error

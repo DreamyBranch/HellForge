@@ -3,12 +3,11 @@
 # signed in: bash hellforge-linux.sh (or ./hellforge-linux.sh once it is executable)
 # Another launcher (docs/external-launchers.md) passes the Windows program to run in place of HellForge.exe, with its
 # arguments, e.g. ./hellforge-linux.sh "$INSTALL/app/cli/HellForge.Cli.exe" play --wait yes
-# What it does: checks the programs it needs, finds Steam, the prefix and Proton, and, until the game is copied, moves
-# Steam's download of the supported build into the prefix (where setup reads it). Then it bridges Steam's local ports
+# What it does: checks the programs it needs, finds Steam, the prefix and Proton, then bridges Steam's local ports
 # (hf-bridge-host.sh, unless one is running already), fetches the live galactic war while this PC still has its network
-# (the session that follows has none and serves this copy), and starts the launcher inside a network namespace with
-# loopback only (hellforge-offline.sh), where hf-inner.sh forwards Steam's ports and runs HellForge.exe through Proton.
-# The bridge it started stops when HellForge closes.
+# (the session that follows has none and serves this copy), and starts the requested program inside a network namespace
+# with loopback only (hellforge-offline.sh), where hf-inner.sh forwards Steam's ports and runs it through Proton.
+# The bridge it started stops when the wrapped program and its session processes close.
 #
 # Settings (environment variables; each has a default that is found):
 #   PROTON                            the proton script to run HellForge with (default: one the Steam client has, the last
@@ -20,7 +19,7 @@
 #                                     else HELLDIVERS 2's, steamapps/compatdata/553850)
 #
 # Linux support is the work of DreamyBranch and joshua-software-dev (SkyeShade/HellForge issue 1). The dependency hints,
-# the Steam folder search, the prefix found from the installation and the depot move follow DreamyBranch's guided
+# the Steam folder search and the prefix found from the installation follow DreamyBranch's guided
 # install (issue 11).
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,7 +53,7 @@ fi
 : "${STEAM_COMPAT_CLIENT_INSTALL_PATH:?Steam was not found (no steamapps folder in ~/.local/share/Steam, ~/.steam or Flatpak's or Snap's Steam folder): set STEAM_COMPAT_CLIENT_INSTALL_PATH to the folder that holds steamapps}"
 export STEAM_COMPAT_CLIENT_INSTALL_PATH
 
-# The prefix: an installation made by HellForge-Setup.exe under Proton is inside its prefix, so that one is meant.
+# The prefix: installations inside a Proton prefix are meant to use that prefix.
 inside=""
 case "$INSTALL" in
   */pfx/drive_c/*) inside="${INSTALL%%/pfx/drive_c/*}" ;;
@@ -87,59 +86,6 @@ if [ ! -x /usr/local/lib/hellforge/unshare ] && [ "$(cat /proc/sys/kernel/apparm
   echo "This system only lets allowed programs make the network namespace HellForge runs in. Run this once, then start HellForge again:" >&2
   echo "  sudo bash $here/allow-namespace.sh   (docs/linux.md)" >&2
   exit 1
-fi
-
-# Until the game is copied: Steam's download of the supported build (the wizard's download_depot commands) lands in Steam's
-# own folder, which setup cannot read under Wine (the Linux folders are on Wine's Z: drive, which it refuses as a linked
-# path). Setup reads it from Steam's folder inside the prefix, so offer to move it there: a rename on the same
-# filesystem, no extra space. Only for an installation inside this prefix (made there by HellForge-Setup.exe).
-# The depots are the supported build's (src/HellForge.Core/supported-build.json).
-if [ -n "$inside" ] && [ "$inside" -ef "$STEAM_COMPAT_DATA_PATH" ] && [ ! -f "$INSTALL/game/bin/helldivers2.exe" ]; then
-  depots="553851 553853 553854"
-  target="$STEAM_COMPAT_DATA_PATH/pfx/drive_c/Program Files (x86)/Steam/steamapps/content/app_553850"
-  # true for a folder that holds every depot the prefix still lacks
-  holds_rest() {
-    local d n=0
-    for d in $depots; do
-      [ -d "$target/depot_$d" ] && continue
-      [ -d "$1/depot_$d" ] || return 1
-      n=$((n + 1))
-    done
-    [ "$n" -gt 0 ]
-  }
-  download=""
-  # the Linux client downloads relative to the folder its program runs from (docs/linux.md)
-  for client in . ubuntu12_32 ubuntu12_64 steamrt64; do
-    candidate="$STEAM_COMPAT_CLIENT_INSTALL_PATH/$client/steamapps/content/app_553850"
-    if holds_rest "$candidate"; then download="$(cd "$candidate" && pwd)"; break; fi
-  done
-  if [ -n "$download" ]; then
-    echo "Steam's download of the supported HELLDIVERS 2 build is in $download."
-    echo "Setup reads it only from inside the prefix: $target"
-    before="$(du -sb "$download" | cut -f1)"; sleep 5; after="$(du -sb "$download" | cut -f1)"
-    if [ "$before" != "$after" ]; then
-      echo "Steam is still writing it. Once the console says \"Depot download complete\" for all three commands, start HellForge again to move it." >&2
-    elif [ -t 0 ]; then
-      mkdir -p "$target"
-      if [ "$(stat -c %d "$download")" != "$(stat -c %d "$target")" ]; then
-        echo "The prefix is on another filesystem than Steam: moving copies about 24 GB and needs that much free space there."
-      fi
-      read -r -p "Move it into the prefix now? Only if all three download_depot commands said \"Depot download complete\". [y/N] " answer || answer=""
-      if [[ "$answer" =~ ^[Yy] ]]; then
-        for d in $depots; do
-          if [ -d "$download/depot_$d" ] && [ ! -e "$target/depot_$d" ]; then echo "Moving depot_$d ..."; mv "$download/depot_$d" "$target/depot_$d"; fi
-        done
-        rmdir "$download" 2>/dev/null || true
-        echo "Moved. In HellForge's setup, press Check again (or Start setup) to copy the game from it."
-      fi
-    else
-      echo "Run this script in a terminal to move it, or move its depot_* folders there yourself (docs/linux.md)." >&2
-    fi
-  fi
-  # Setup looks for Steam where the prefix's registry says (SteamPath), else in C:\Program Files (x86)\Steam: point it at
-  # that folder, the one inside the prefix (a Steam folder on the Z: drive is refused as a linked path).
-  "$PROTON" run reg add 'HKCU\Software\Valve\Steam' /v SteamPath /t REG_SZ /d 'C:\Program Files (x86)\Steam' /f >/dev/null 2>&1 \
-    || echo "Could not set Steam's folder in the prefix's registry (SteamPath); setup may not find the download." >&2
 fi
 
 # Steam's bridge: the one running, else one of our own for as long as HellForge runs.

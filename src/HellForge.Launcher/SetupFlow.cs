@@ -12,7 +12,7 @@ using HellForge.Core;
 namespace HellForge.Launcher;
 
 // Setting up an installation: find HELLDIVERS 2 in Steam, confirm ownership, copy the game into the installation,
-// place its network block (WFP filters), optionally import earlier HellForge game data and create shortcuts. When Steam's own copy is
+// place its network block (WFP filters on Windows, namespace on Linux), optionally import earlier HellForge game data and create shortcuts. When Steam's own copy is
 // another build (Arrowhead patched the game) or missing, Steam itself downloads the supported build's depots through
 // its console (SteamDepotDownload) and the game is copied from there. Shown instead of the other
 // pages until the game is copied; Settings > Installation runs it again to check and repair.
@@ -53,15 +53,27 @@ public partial class MainWindow
             SetupSteps.Children.Add(row);
             setupRows.Add((dot, detail));
         }
-        ImportBox.IsVisible = Directory.Exists(Path.Combine(EarlierGameData, "profiles")) || File.Exists(Path.Combine(EarlierGameData, "user_settings.config"));
-        InstallCard.IsVisible = true;
-        InstallText.Text = $"{Privacy.Scrub(install.Root)}  ·  HELLDIVERS 2 build {SupportedBuild.Current.BuildId}";
         SetupStartButton.Click += async (_, _) => await RunSetup();
         SetupPauseButton.Click += (_, _) => setupCancel?.Cancel();
         SetupBackButton.Click += (_, _) => LeaveSetup();
         OpenConsoleButton.Click += (_, _) => OpenSteamConsole();
         DeleteDownloadBox.Content = $"Delete Steam's download after copying (frees about {SupportedBuild.Current.TotalBytes / 1e9:0} GB)";
         RepairButton.Click += (_, _) => EnterSetup(repair: true);
+        if (OperatingSystem.IsLinux())
+        {
+            InstallCard.IsVisible = true;
+            InstallText.Text = SupportedBuild.Current.IsComplete(install.Game)
+                ? $"{Privacy.Scrub(install.Root)}  ·  HELLDIVERS 2 build {SupportedBuild.Current.BuildId}. Native setup and repair are available."
+                : $"{Privacy.Scrub(install.Root)}  ·  Complete setup natively with Steam for Linux.";
+            UninstallButton.IsVisible = false;
+            DesktopShortcutBox.IsVisible = StartMenuShortcutBox.IsVisible = ImportBox.IsVisible = false;
+            SetupIntro.Text = "Setup reads Steam's depot downloads directly, copies the supported build into this installation and verifies every file against Steam's hashes. Steam ownership and the Linux network namespace are checked before setup completes.";
+            if (!SupportedBuild.Current.IsComplete(install.Game)) EnterSetup(repair: false);
+            return;
+        }
+        ImportBox.IsVisible = Directory.Exists(Path.Combine(EarlierGameData, "profiles")) || File.Exists(Path.Combine(EarlierGameData, "user_settings.config"));
+        InstallCard.IsVisible = true;
+        InstallText.Text = $"{Privacy.Scrub(install.Root)}  ·  HELLDIVERS 2 build {SupportedBuild.Current.BuildId}";
         UninstallButton.Click += (_, _) => AskUninstall(install);
         UninstallConfirmButton.Click += async (_, _) => await Uninstall(install);
         UninstallCancelButton.Click += (_, _) => UninstallConfirm.IsVisible = false;
@@ -107,7 +119,8 @@ public partial class MainWindow
 
     async Task RunSetup()
     {
-        if (setupRunning || runner.IsRunning || paths.InstallRoot == null || !OperatingSystem.IsWindows()) return;
+        if (setupRunning || runner.IsRunning || paths.InstallRoot == null ||
+            !(OperatingSystem.IsWindows() || OperatingSystem.IsLinux())) return;
         setupRunning = true;
         SetupStartButton.IsEnabled = false;
         SetupBackButton.IsVisible = false;
@@ -115,12 +128,14 @@ public partial class MainWindow
         var step = SetupStep.Find;
         try
         {
+            if (OperatingSystem.IsLinux())
+            {
+                await RunLinuxSetup(install);
+                return;
+            }
             SetRow(step, null, "Looking in your Steam libraries...", running: true);
-            // Linux (Wine/Proton) outside the namespace, such as the launcher HellForge-Setup.exe opens: the network block
-            // step could only fail there (Wine has no Windows Filtering Platform), after the whole copy.
-            if (LinuxNetworkBlock.UnderWine && !LinuxNetworkBlock.Requested)
-                throw new SetupStopped("On Linux, setup runs inside HellForge's network namespace. Close HellForge and start it with " +
-                    "app/linux/hellforge-linux.sh (docs/linux.md), then start setup there.");
+            if (LinuxNetworkBlock.UnderWine)
+                throw new SetupStopped("Linux setup must run in the native launcher. Close this window and start app/launcher-linux/HellForge.Launcher.");
             if (!LinuxNetworkBlock.Requested) await CheckFilteringEngine(install);
             var build = SupportedBuild.Current;
             var steamRoot = SteamLocator.SteamRoot() ?? throw new SetupStopped("Steam is not installed on this PC. Install Steam and HELLDIVERS 2, then start setup again.");
@@ -275,8 +290,12 @@ public partial class MainWindow
             else SetRow(step, true, "Skipped.");
 
             step = SetupStep.Shortcuts;
-            var made = CreateShortcuts(install);
-            SetRow(step, true, made.Count > 0 ? string.Join(", ", made) : "Skipped.");
+            if (OperatingSystem.IsWindows())
+            {
+                var made = CreateShortcuts(install);
+                SetRow(step, true, made.Count > 0 ? string.Join(", ", made) : "Skipped.");
+            }
+            else SetRow(step, true, "Skipped on Linux.");
             await SyncBundledMods(install); // with the game copied: the editor's icons and fonts, Hell Forge's icon
 
             // The highlighted button on the right always moves forward: here that is Continue. Checking again stays
@@ -315,6 +334,104 @@ public partial class MainWindow
             SetupStartButton.IsEnabled = true;
             SetupPauseButton.IsVisible = false;
         }
+    }
+
+    async Task RunLinuxSetup(InstallLayout install)
+    {
+        var step = SetupStep.Find;
+        SetRow(step, null, "Checking Steam, Proton and the engine package...", running: true);
+        var steamRoot = SteamLocator.SteamRoot() ?? throw new SetupStopped("Steam was not found. Start Steam and sign in, then try setup again.");
+        var proton = SteamLocator.ProtonScript(steamRoot) ?? throw new SetupStopped("Proton was not found. Install a Proton version in Steam or set PROTON.");
+        var wrapper = Path.Combine(install.App, "linux", "hellforge-linux.sh");
+        var package = Path.Combine(install.App, "engine-package.zip");
+        var probe = Path.Combine(install.App, "steamprobe", "HellForge.SteamProbe.exe");
+        if (!File.Exists(wrapper) || !File.Exists(package) || !File.Exists(probe))
+            throw new SetupStopped("The Linux setup files are missing. Update HellForge so app/linux, app/engine-package.zip and app/steamprobe are installed.");
+        await Task.Run(() => EnginePackageInstaller.Install(install));
+
+        var build = SupportedBuild.Current;
+        SteamGame? game;
+        string? unusable = null;
+        try { game = await Task.Run(() => SteamLocator.FindGame(steamRoot)); }
+        catch (Exception error) when (error is InvalidDataException or IOException) { game = null; unusable = error.Message; }
+
+        var fromDepots = false;
+        string? source = null;
+        if (game is { SupportedBuild: true })
+        {
+            source = game.Report.Source;
+            SetRow(step, true, $"Supported build {game.Report.Pin.BuildId} in {source}");
+        }
+        else if (await Task.Run(() => SteamDepotDownload.IsComplete(steamRoot, build)))
+        {
+            fromDepots = true;
+            SetRow(step, true, $"Supported build {build.BuildId} downloaded by Steam into {SteamDepotDownload.ContentFolder(steamRoot, build)}");
+        }
+        else
+        {
+            ShowDownload(steamRoot, game == null
+                ? unusable == null ? "no supported game build" : "an unusable HELLDIVERS 2 installation"
+                : $"unsupported HELLDIVERS 2 build {game.Report.Pin.BuildId}");
+            throw new SetupWaiting("Steam needs to finish downloading the three supported-build depots before setup can continue.");
+        }
+
+        setupCancel = new();
+        var token = setupCancel.Token;
+        step = SetupStep.Copy;
+        SetRow(step, null, "Copying and verifying game files...", running: true);
+        await CopyGame(source, steamRoot, install);
+        token.ThrowIfCancellationRequested();
+        var copied = $"{build.Files.Count} files ({build.TotalBytes / 1e9:0.0} GB), each verified against Steam's hashes.";
+        if (fromDepots && DeleteDownloadBox.IsChecked == true)
+        {
+            SetRow(step, null, copied + " Deleting Steam's download...", running: true);
+            await Task.Run(() => SteamDepotDownload.Delete(steamRoot, build), token);
+            copied += " Steam's download was deleted.";
+        }
+        DownloadCard.IsVisible = false;
+        SetRow(step, true, copied);
+
+        step = SetupStep.Ownership;
+        SetRow(step, null, "Confirming Steam ownership through Proton...", running: true);
+        var steamApi = Path.Combine(install.Game, "bin", "steam_api64.dll");
+        var evidence = Path.Combine(install.Logs, "setup-ownership.json");
+        var checkStarted = DateTime.UtcNow;
+        if (File.Exists(evidence)) File.Delete(evidence);
+        int exit;
+        string errorMessage;
+        try
+        {
+            exit = await Task.Run(() => SteamOwnershipCheck.RunProbeThroughLinuxWrapper(wrapper, proton, install.Root,
+                WinePath.PrefixFromInstallRoot(install.Root), steamRoot, probe, steamApi, Path.Combine(install.Temp, "ownership"),
+                evidence, TimeSpan.FromSeconds(60)), token);
+            errorMessage = "";
+        }
+        catch (InvalidDataException error) { exit = 1; errorMessage = error.Message; }
+        if (exit == 0 && SteamOwnershipCheck.Problem(evidence, checkStarted) is { } problem) (exit, errorMessage) = (1, problem + ".");
+        if (exit != 0)
+            throw new SetupStopped("The ownership check did not pass: " +
+                (errorMessage.Length > 0 ? errorMessage : $"exit code {exit}.") +
+                " Make sure Steam is running and signed in to an account that owns HELLDIVERS 2.");
+        SetRow(step, true, "Steam confirmed the game on this account.");
+
+        step = SetupStep.NetworkBlock;
+        SetRow(step, null, "Checking the offline network namespace...", running: true);
+        if (LinuxNetworkBlock.InPlace(install.Root)) SetRow(step, true, "The network namespace marker is already in place.");
+        else
+        {
+            await LinuxNetworkBlock.Install(install);
+            SetRow(step, true, "The namespace self-test passed; sessions will run inside the offline network namespace.");
+        }
+
+        SetRow(SetupStep.Import, true, "Skipped on Linux.");
+        SetRow(SetupStep.Shortcuts, true, "Skipped on Linux.");
+        await SyncBundledMods(install);
+        SetupTitle.Text = "Ready to play";
+        SetupStartButton.IsVisible = false;
+        SetupBackButton.Content = "Continue";
+        SetBackButtonPrimary(true);
+        SetupBackButton.IsVisible = true;
+        Nav.IsVisible = true;
     }
 
     // From Steam's installed game (source), or from its depot downloads when source is null.
@@ -403,12 +520,8 @@ public partial class MainWindow
             "for your account. Open the Steam console, paste each command below and press Enter, one at a time. Steam then downloads about " +
             $"{build.TotalBytes / 1e9:0} GB into {SteamDepotDownload.ContentFolder(steamRoot, build)} (your normal game is not touched). " +
             "Steam shows no progress in its library for this; the bar below does.";
-        // Linux: Steam for Linux downloads into its own folder, which setup cannot read under Wine (Z: counts as a linked
-        // path); linux/hellforge-linux.sh moves the download into this prefix's Steam folder.
-        if (LinuxNetworkBlock.UnderWine)
-            DownloadIntro.Text += " On Linux, Steam puts the download in its own folder instead, and the bar stays empty: once the console " +
-                "says \"Depot download complete\" for every command, close HellForge and start it again with app/linux/hellforge-linux.sh, " +
-                "which moves the download into this prefix. Then press Check again.";
+        if (OperatingSystem.IsLinux())
+            DownloadIntro.Text += " Native Linux setup reads the Steam download directly from this folder; there is no move into the Proton prefix.";
         DownloadCommands.Children.Clear();
         foreach (var command in SteamDepotDownload.Commands(build))
         {
@@ -462,10 +575,19 @@ public partial class MainWindow
         finally { checkingDownload = false; }
     }
 
-    static void OpenSteamConsole()
+    void OpenSteamConsole()
     {
-        try { Process.Start(new ProcessStartInfo("steam://open/console") { UseShellExecute = true }); }
-        catch (Exception error) when (error is Win32Exception or InvalidOperationException) { }
+        try
+        {
+            var process = Process.Start(OperatingSystem.IsLinux()
+                ? new ProcessStartInfo("xdg-open", "steam://open/console") { UseShellExecute = false }
+                : new ProcessStartInfo("steam://open/console") { UseShellExecute = true });
+            if (process == null) throw new InvalidOperationException("No process was started.");
+        }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException or IOException)
+        {
+            Append("Could not open the Steam console: " + error.Message + " Start Steam with -console, then try again.", Red);
+        }
     }
 
     // HellForge's network block is placed in the Windows Filtering Platform, carried by the Base Filtering Engine (BFE)
@@ -524,7 +646,7 @@ public partial class MainWindow
         UninstallConfirm.IsVisible = false;
         if (runner.IsRunning || setupRunning) { UninstallText.Text = "Stop the session (or setup) first."; return; }
         // Linux (Wine/Proton): the removal runs Windows PowerShell, which a Wine prefix has only as a stub that does nothing.
-        if (LinuxNetworkBlock.UnderWine) { UninstallText.Text = "On Linux, remove HellForge by hand: see \"Removing HellForge\" in docs/linux.md."; return; }
+        if (OperatingSystem.IsLinux() || LinuxNetworkBlock.UnderWine) { UninstallText.Text = "On Linux, remove HellForge by hand: see \"Removing HellForge\" in docs/linux.md."; return; }
         var running = Process.GetProcesses().Where(p => p.Id != Environment.ProcessId && IsFrom(p, install.Root)).Select(p => p.ProcessName).Distinct().ToList();
         if (running.Count > 0) { UninstallText.Text = "Close these first: " + string.Join(", ", running) + "."; return; }
         try { UninstallSafety(install.Root); }

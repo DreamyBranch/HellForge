@@ -21,11 +21,12 @@ done
 [ "$n" -gt 0 ] || { echo "no bridge sockets found; start hf-bridge-host.sh first" >&2; exit 1; }
 trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
 sleep 1
+if [ -n "${HELLFORGE_WORKING_DIRECTORY:-}" ]; then cd "$HELLFORGE_WORKING_DIRECTORY"; fi
 if [ $# -gt 0 ]; then "$PROTON" run "$@" || true; else "$PROTON" run "$INSTALL/HellForge.exe" || true; fi
 
 # "proton run" returns as soon as the launcher has started, but the launcher keeps running (and HellForge.Cli play
 # returns once the session has started).
 # Keep the forwarders alive until HellForge's own processes (launcher, session, backend, game) are gone.
-pat='HellForge\.(Launcher|Session|Cli)|LocalBackend|helldivers2'
+pat='HellForge\.(Launcher|Session|Cli|SteamProbe)|LocalBackend|helldivers2'
 for _ in $(seq 1 30); do pgrep -u "$(id -u)" -f "$pat" >/dev/null && break; sleep 1; done
 while pgrep -u "$(id -u)" -f "$pat" >/dev/null; do sleep 2; done

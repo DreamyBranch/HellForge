@@ -14,11 +14,9 @@ public sealed class SessionRunner
 {
     Process? controller;
 
-    public static bool IsSupported => OperatingSystem.IsWindows();
+    public static bool IsSupported => OperatingSystem.IsWindows() || OperatingSystem.IsLinux();
 
-    public static string UnsupportedMessage => OperatingSystem.IsLinux()
-        ? "Linux sessions are not supported yet."
-        : "Sessions are only supported on Windows for now.";
+    public static string UnsupportedMessage => "Sessions are supported on Windows and experimental on Linux.";
 
     public bool IsRunning => controller is { HasExited: false };
     public int? ProcessId => controller?.Id;
@@ -26,15 +24,16 @@ public sealed class SessionRunner
 
     // The session runner's command line (after HellForge.Session.exe). The template only matters when the backend
     // creates the profile on first use.
-    public static List<string> Arguments(ISessionPaths paths, LocalProfile profile, SessionOptions options)
+    public static List<string> Arguments(ISessionPaths paths, LocalProfile profile, SessionOptions options, string? winePrefix = null)
     {
         if (paths.InstallRoot == null) throw new InvalidOperationException("Sessions run in installations made with HellForge-Setup.");
-        var arguments = new List<string> { "play", "--install", Path.TrimEndingDirectorySeparator(paths.InstallRoot),
-            "--profile", Path.TrimEndingDirectorySeparator(Path.GetFullPath(profile.Folder)), "--template", profile.Template };
+        string Map(string path) => winePrefix == null ? path : WinePath.ToWinePath(path, winePrefix);
+        var arguments = new List<string> { "play", "--install", Map(Path.TrimEndingDirectorySeparator(paths.InstallRoot)),
+            "--profile", Map(Path.TrimEndingDirectorySeparator(Path.GetFullPath(profile.Folder))), "--template", profile.Template };
         if (options.LocalPlayFab) arguments.Add("--local-playfab");
         if (options.SdkShims) arguments.Add("--multiplayer");
         // the galactic war (ProfileStore.LoadWar): the live war through the mirror, or the all-planets war; the frozen war needs nothing
-        if (options.War == ProfileStore.WarLive) arguments.AddRange(["--live-war", Path.Combine(paths.HostRoot, "live-war.json")]);
+        if (options.War == ProfileStore.WarLive) arguments.AddRange(["--live-war", Map(Path.Combine(paths.HostRoot, "live-war.json"))]);
         else if (options.War == ProfileStore.WarOpen) arguments.Add("--open-war");
         if (options.EngineLog) arguments.Add("--engine-log");
         // the player's launch options, for the session runner to add to the game's command line (GameLaunchOptions)
@@ -46,19 +45,33 @@ public sealed class SessionRunner
     {
         if (!IsSupported) throw new PlatformNotSupportedException(UnsupportedMessage);
         if (IsRunning) return;
-        var arguments = Arguments(paths, profile, options);
+        if (paths.InstallRoot == null) throw new InvalidOperationException("Sessions run in installations made with HellForge-Setup.");
+        var linux = OperatingSystem.IsLinux();
+        var prefix = linux ? WinePath.PrefixFromInstallRoot(paths.InstallRoot) : null;
+        var arguments = Arguments(paths, profile, options, prefix);
         LinuxNetworkBlock.GuardSession(paths.InstallRoot!);
-        var start = new ProcessStartInfo(paths.Session)
+        var wrapper = Path.Combine(paths.InstallRoot!, "app", "linux", "hellforge-linux.sh");
+        var start = new ProcessStartInfo(linux ? "bash" : paths.Session)
         {
             WorkingDirectory = paths.Root,
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        if (linux)
+        {
+            start.ArgumentList.Add(wrapper);
+            start.ArgumentList.Add(paths.Session);
+            start.Environment["INSTALL"] = paths.InstallRoot!;
+            start.Environment["STEAM_COMPAT_DATA_PATH"] = prefix!;
+        }
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         // The mod loader has HellForge.Cli write a full dump at the game's first crash (WriteCrashDump); the game inherits
         // the session runner's environment.
         if (options.CrashDump)
-            start.Environment["HELLFORGE_CRASH_DUMP"] = Path.Combine(paths.InstallRoot!, "app", "cli", "HellForge.Cli.exe");
+        {
+            var crashDump = Path.Combine(paths.InstallRoot!, "app", "cli", "HellForge.Cli.exe");
+            start.Environment["HELLFORGE_CRASH_DUMP"] = prefix == null ? crashDump : WinePath.ToWinePath(crashDump, prefix);
+        }
         // An installation keeps even temporary files inside its folder.
         var temp = Directory.CreateDirectory(Path.Combine(paths.InstallRoot!, "temp")).FullName;
         start.Environment["TEMP"] = start.Environment["TMP"] = temp;
@@ -71,6 +84,8 @@ public sealed class SessionRunner
     {
         if (SessionFiles.ReadJson(paths.SessionFile) is not { } session) return null;
         var run = SessionFiles.Text(session, "run");
+        if (OperatingSystem.IsLinux() && paths.InstallRoot != null && IsWineDrivePath(run))
+            run = WinePath.ToHostPath(run, WinePath.PrefixFromInstallRoot(paths.InstallRoot!));
         return run.Length > 0 &&
             DateTime.TryParse(SessionFiles.Text(session, "startedUtc"), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var started) &&
             started >= startedUtc.AddSeconds(-5) ? run : null;
@@ -78,7 +93,14 @@ public sealed class SessionRunner
 
     // The newest run folder, whatever started it, or null.
     public static string? LatestRun(ISessionPaths paths) =>
-        SessionFiles.ReadJson(paths.SessionFile) is { } session && SessionFiles.Text(session, "run") is { Length: > 0 } run ? run : null;
+        SessionFiles.ReadJson(paths.SessionFile) is { } session && SessionFiles.Text(session, "run") is { Length: > 0 } run
+            ? OperatingSystem.IsLinux() && paths.InstallRoot != null && IsWineDrivePath(run)
+                ? WinePath.ToHostPath(run, WinePath.PrefixFromInstallRoot(paths.InstallRoot!))
+                : run
+            : null;
+
+    static bool IsWineDrivePath(string path) => path.Length >= 3 &&
+        char.ToUpperInvariant(path[0]) is 'C' or 'Z' && path[1] == ':' && path[2] is '\\' or '/';
 
     // The session runner stops the game and the backend, then exits.
     public static void SignalStop(string runDirectory) =>
@@ -87,7 +109,9 @@ public sealed class SessionRunner
     // Only before a run directory exists: the session runner has not started the game yet.
     public void Kill()
     {
-        if (IsRunning) controller!.Kill();
+        if (!IsRunning) return;
+        if (OperatingSystem.IsLinux()) controller!.Kill(entireProcessTree: true);
+        else controller!.Kill();
     }
 
     // True once, when the controller has exited; releases it.

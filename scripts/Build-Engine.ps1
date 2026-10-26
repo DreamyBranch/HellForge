@@ -11,8 +11,9 @@
 # (scripts/Get-BuildTools.ps1), and Microsoft's public PlayFab SDK packages, whose DLLs
 # are byte-identical to the ones HD2 ships, so their headers give the exact signatures (nothing from them is committed or
 # shipped). The steam_api64.dll stand-in's export table is generated from the game's own steam_api64.dll (-SteamApi, by
-# default the one in the Steam library), pinned below and never shipped. NativeAOT needs Visual Studio's C++ build tools.
-param([switch]$SkipSmoke,[string]$SteamApi)
+# default the one in the Steam library), pinned below and never shipped. On a Windows build runner without game files,
+# -SteamExports accepts a text-only manifest generated locally from that pinned DLL. NativeAOT needs Visual Studio's C++ build tools.
+param([switch]$SkipSmoke,[string]$SteamApi,[string]$SteamExports)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $ProgressPreference='SilentlyContinue'
@@ -76,7 +77,8 @@ $partyInclude=Join-Path $partyPackage 'build/native/include'
 $lobbyInclude=Join-Path $lobbyPackage 'include'
 # steam_api64.dll of the supported build (supported-build.json lists it by size and SHA-1).
 $steamApiPin='1DB3FD414039D3E5815A5721925DD2E0A3A9F2549603C6CAB7C49B84966A1AF3'
-if(-not $SteamApi){
+if($SteamApi -and $SteamExports){throw 'Pass either -SteamApi or -SteamExports, not both.'}
+if(-not $SteamExports -and -not $SteamApi){
     $steamRoot=(Get-ItemProperty -LiteralPath 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamPath
     if($steamRoot){
         $libraries=@($steamRoot)+@([regex]::Matches([IO.File]::ReadAllText((Join-Path $steamRoot 'steamapps/libraryfolders.vdf')),'"path"\s+"([^"]+)"')|ForEach-Object {$_.Groups[1].Value.Replace('\\','\')})
@@ -84,12 +86,14 @@ if(-not $SteamApi){
     }
     if(-not $SteamApi){throw 'HELLDIVERS 2 was not found in Steam; pass -SteamApi with the game''s bin/steam_api64.dll.'}
 }
-Assert-Hash $SteamApi $steamApiPin 'steam_api64.dll'
+if($SteamApi){Assert-Hash $SteamApi $steamApiPin 'steam_api64.dll'}
+if($SteamExports -and -not(Test-Path -LiteralPath $SteamExports)){throw ('Steam export manifest not found: '+$SteamExports)}
 
 dotnet build (Join-Path $project 'src/HellForge.SdkShimGen/HellForge.SdkShimGen.csproj') --nologo -v q
 if($LASTEXITCODE){throw 'HellForge.SdkShimGen build failed.'}
 $generator=Join-Path $project 'src/HellForge.SdkShimGen/bin/Debug/net10.0/HellForge.SdkShimGen.dll'
 function Invoke-Generator{& dotnet $generator @args;if($LASTEXITCODE){throw ('HellForge.SdkShimGen '+$args[0]+' failed.')}}
+if($SteamExports){Invoke-Generator validate-manifest $SteamExports $steamApiPin}
 
 foreach($directory in @($gen,$out)){if(Test-Path -LiteralPath $directory){Remove-Item -LiteralPath $directory -Recurse -Force};New-Item -ItemType Directory $directory|Out-Null}
 Invoke-Generator generate party $partyOriginal (Join-Path $sources 'party_shim.cpp') $gen (Join-Path $partyInclude 'Party_c.h')
@@ -108,7 +112,11 @@ foreach($dll in @(
 if($LASTEXITCODE){throw 'Compiling hellforge_modloader.dll failed.'}
 Copy-Item -LiteralPath (Join-Path $minHook 'LICENSE.txt') -Destination (Join-Path $out 'MinHook-LICENSE.txt')
 $cloudSource=Join-Path $project 'native/steam-cloud/steam_cloud.c'
-Invoke-Generator forward $SteamApi steam_api64_hellforge $cloudSource (Join-Path $gen 'steam_api64.def')
+if($SteamExports){
+    Invoke-Generator forward-manifest $SteamExports steam_api64_hellforge $cloudSource (Join-Path $gen 'steam_api64.def')
+}else{
+    Invoke-Generator forward $SteamApi steam_api64_hellforge $cloudSource (Join-Path $gen 'steam_api64.def')
+}
 # with the network gate (net_gate.c, MinHook), hooked in its DllMain before the game's own code runs
 $minHookSources=@('src/buffer.c','src/hook.c','src/trampoline.c','src/hde/hde64.c')|ForEach-Object {Join-Path $minHook $_}
 & $zig cc -target x86_64-windows-gnu -shared -O2 -std=c11 -Wall -Werror -Wno-unused-parameter -s -I (Join-Path $minHook 'include') $cloudSource `
@@ -123,7 +131,11 @@ if($LASTEXITCODE){throw 'Compiling hellforge_wfp.exe failed.'}
 Get-ChildItem -LiteralPath $out -Filter '*.lib'|Remove-Item
 Invoke-Generator verify $partyOriginal (Join-Path $out 'PartyWin.dll')
 Invoke-Generator verify $lobbyOriginal (Join-Path $out 'PlayFabMultiplayerWin.dll')
-Invoke-Generator verify-forward $SteamApi steam_api64_hellforge $cloudSource (Join-Path $out 'steam_api64.dll')
+if($SteamExports){
+    Invoke-Generator verify-forward-manifest $SteamExports steam_api64_hellforge $cloudSource (Join-Path $out 'steam_api64.dll')
+}else{
+    Invoke-Generator verify-forward $SteamApi steam_api64_hellforge $cloudSource (Join-Path $out 'steam_api64.dll')
+}
 # The mod loader's test DLLs and two example code mods, then its end-to-end smoke test.
 $testOut=Join-Path $project 'artifacts/sdk-shims/test'
 New-Item -ItemType Directory $testOut -Force|Out-Null
@@ -155,7 +167,11 @@ $machineGun=Join-Path $open 'examples/mods/machine-gun-10k-code'
 & (Join-Path $open 'scripts/Build-Mod.ps1') $machineGun|Out-Null
 $compendium=Join-Path $open 'examples/mods/stratagem-compendium'
 & (Join-Path $open 'scripts/Build-Mod.ps1') $compendium|Out-Null
-if(-not $SkipSmoke){Invoke-Generator smoke $out;Invoke-Generator smoke-cloud (Join-Path $out 'steam_api64.dll') $SteamApi;Invoke-Generator smoke-modloader $out $testOut $machineGun $compendium}
+if(-not $SkipSmoke){
+    Invoke-Generator smoke $out
+    if($SteamApi){Invoke-Generator smoke-cloud (Join-Path $out 'steam_api64.dll') $SteamApi}
+    Invoke-Generator smoke-modloader $out $testOut $machineGun $compendium
+}
 $receipt=[ordered]@{builtUtc=[DateTime]::UtcNow.ToString('o');zig='0.17.0';
     originals=[ordered]@{'PartyWin.dll'=(Get-FileHash $partyOriginal).Hash;'PlayFabMultiplayerWin.dll'=(Get-FileHash $lobbyOriginal).Hash;'steam_api64.dll'=$steamApiPin};
     standIns=[ordered]@{'PartyWin.dll'=(Get-FileHash (Join-Path $out 'PartyWin.dll')).Hash;'PlayFabMultiplayerWin.dll'=(Get-FileHash (Join-Path $out 'PlayFabMultiplayerWin.dll')).Hash;

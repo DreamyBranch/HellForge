@@ -13,6 +13,10 @@ const string Usage = """
     HellForge.SdkShimGen smoke <directory with both stand-ins>
     HellForge.SdkShimGen forward <original.dll> <real module> <handwritten.c> <output.def>
     HellForge.SdkShimGen verify-forward <original.dll> <real module> <handwritten.c> <stand-in.dll>
+    HellForge.SdkShimGen manifest <original.dll> <output.json>
+    HellForge.SdkShimGen validate-manifest <manifest.json> <expected-sha256>
+    HellForge.SdkShimGen forward-manifest <manifest.json> <real module> <handwritten.c> <output.def>
+    HellForge.SdkShimGen verify-forward-manifest <manifest.json> <real module> <handwritten.c> <stand-in.dll>
     HellForge.SdkShimGen smoke-cloud <steam_api64 stand-in> <original steam_api64.dll>
     HellForge.SdkShimGen smoke-lobby-link <directory with the stand-ins> <HellForge.LocalBackend.dll>
     HellForge.SdkShimGen smoke-modloader <directory with the stand-ins and loader> <directory with the test DLLs> <Machine Gun 10k code mod>
@@ -27,6 +31,10 @@ try
         ["smoke", var directory] => Smoke.Run(directory),
         ["forward", var original, var module, var handwritten, var output] => Forward(original, module, handwritten, output),
         ["verify-forward", var original, var module, var handwritten, var standIn] => VerifyForward(original, module, handwritten, standIn),
+        ["manifest", var original, var output] => WriteManifest(original, output),
+        ["validate-manifest", var manifest, var expectedSha256] => ValidateManifest(manifest, expectedSha256),
+        ["forward-manifest", var manifest, var module, var handwritten, var output] => ForwardManifest(manifest, module, handwritten, output),
+        ["verify-forward-manifest", var manifest, var module, var handwritten, var standIn] => VerifyForwardManifest(manifest, module, handwritten, standIn),
         ["smoke-cloud", var standIn, var original] => CloudSmoke.Run(standIn, original),
         ["smoke-lobby-link", var directory, var backend] => LobbyLinkSmoke.Run(directory, backend),
         ["smoke-modloader", var directory, var tests, var machineGun] => ModLoaderSmoke.Run(directory, tests, machineGun),
@@ -34,7 +42,7 @@ try
         _ => Fail(Usage)
     };
 }
-catch (Exception error) when (error is IOException or FormatException or InvalidDataException or BadImageFormatException)
+catch (Exception error) when (error is IOException or FormatException or InvalidDataException or BadImageFormatException or System.Text.Json.JsonException)
 {
     return Fail(error.Message);
 }
@@ -144,6 +152,55 @@ static int Forward(string original, string module, string handwritten, string ou
     File.WriteAllText(output, definition.ToString());
     Console.WriteLine($"{Path.GetFileName(original)}: {exports.Count} exports, {own.Count} hand-written, {exports.Count - own.Count} forwarded to {module}.dll.");
     return 0;
+}
+
+static int WriteManifest(string original, string output)
+{
+    SteamExportsManifest.WriteFromPe(original, output);
+    var manifest = SteamExportsManifest.Read(output);
+    Console.WriteLine($"{Path.GetFileName(original)}: wrote {manifest.Exports.Count} named exports to {output}.");
+    return 0;
+}
+
+static int ValidateManifest(string path, string expectedSha256)
+{
+    var manifest = SteamExportsManifest.Read(path);
+    SteamExportsManifest.ValidateSourceHash(manifest, expectedSha256);
+    Console.WriteLine($"Steam export manifest: {manifest.Exports.Count} exports; source SHA-256 matches the pin.");
+    return 0;
+}
+
+static int ForwardManifest(string manifestPath, string module, string handwritten, string output)
+{
+    if (!Regex.IsMatch(module, @"^[A-Za-z0-9_]+$")) return Fail("The real module name must be a plain DLL name without extension.");
+    var manifest = SteamExportsManifest.Read(manifestPath);
+    var own = OwnFunctions(handwritten);
+    File.WriteAllText(output, SteamExportsManifest.ForwardDefinition(manifest, module, own));
+    Console.WriteLine($"steam_api64.dll: {manifest.Exports.Count} exports, {own.Count} hand-written, {manifest.Exports.Count - own.Count} forwarded to {module}.dll.");
+    return 0;
+}
+
+static int VerifyForwardManifest(string manifestPath, string module, string handwritten, string standIn)
+{
+    var manifest = SteamExportsManifest.Read(manifestPath);
+    var own = OwnFunctions(handwritten);
+    var expected = manifest.Exports.ToDictionary(export => export.Name, export => export.Ordinal, StringComparer.Ordinal);
+    var actual = PeTables.Exports(standIn).ToDictionary(export => export.Name, export => export.Ordinal, StringComparer.Ordinal);
+    var forwarders = PeTables.Forwarders(standIn);
+    var problems = new List<string>();
+    foreach (var (name, ordinal) in expected)
+    {
+        if (!actual.TryGetValue(name, out var got) || got != ordinal) { problems.Add($"missing export {name} @{ordinal}"); continue; }
+        forwarders.TryGetValue(name, out var target);
+        if (own.Contains(name) ? target != null : target != $"{module}.{name}")
+            problems.Add($"{name} {(own.Contains(name) ? "should be code but forwards to " + target : "should forward to " + module + "." + name)}");
+    }
+    problems.AddRange(actual.Keys.Where(name => !expected.ContainsKey(name)).Select(name => "extra export " + name));
+    var modules = PeTables.ImportedModules(standIn);
+    problems.AddRange(modules.Where(m => !IsSystemModule(m)).Select(m => "non-system import " + m));
+    Console.WriteLine($"{Path.GetFileName(standIn)}: {actual.Count}/{expected.Count} exports, {forwarders.Count} forwarded; imports {string.Join(", ", modules)}");
+    foreach (var problem in problems.Take(20)) Console.Error.WriteLine("  " + problem);
+    return problems.Count == 0 ? 0 : 1;
 }
 
 // Same names and ordinals as the original; the hand-written ones are code, all others forward to module.sameName.
