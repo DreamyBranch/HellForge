@@ -38,10 +38,11 @@ static class WinePathTests
                 var started = DateTime.UtcNow;
                 File.WriteAllText(paths.SessionFile, System.Text.Json.JsonSerializer.Serialize(new
                 {
+                    runId = "run",
                     run = @"C:\users\steamuser\Documents\HellForge\logs\sessions\run",
                     startedUtc = started.ToString("o")
                 }));
-                check(SessionRunner.LatestRun(paths) == runFolder && SessionRunner.RunSince(paths, started) == runFolder,
+                check(SessionRunner.LatestRun(paths) == runFolder && SessionRunner.RunSince(paths, null) == runFolder,
                     "Session run-file C: paths map back to native folders.");
             }
         });

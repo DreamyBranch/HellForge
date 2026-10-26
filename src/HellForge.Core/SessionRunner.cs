@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 
 namespace HellForge.Core;
 
@@ -78,17 +77,20 @@ public sealed class SessionRunner
         controller = Process.Start(start) ?? throw new InvalidOperationException("The session runner did not start.");
     }
 
-    // The run folder the session runner made for a session started at `startedUtc` (it names its newest run in
-    // logs/play-session.json), or null while it has not made one yet.
-    public static string? RunSince(ISessionPaths paths, DateTime startedUtc)
+    // The ID of the run currently named in logs/play-session.json, or null before the first run.
+    public static string? LatestRunId(ISessionPaths paths) =>
+        SessionFiles.ReadJson(paths.SessionFile) is { } session ? SessionFiles.Text(session, "runId") : null;
+
+    // The run folder the session runner published after `previousRunId`, or null while no new run exists yet.
+    public static string? RunSince(ISessionPaths paths, string? previousRunId)
     {
         if (SessionFiles.ReadJson(paths.SessionFile) is not { } session) return null;
+        var runId = SessionFiles.Text(session, "runId");
+        if (runId.Length == 0 || runId == previousRunId) return null;
         var run = SessionFiles.Text(session, "run");
         if (OperatingSystem.IsLinux() && paths.InstallRoot != null && IsWineDrivePath(run))
             run = WinePath.ToHostPath(run, WinePath.PrefixFromInstallRoot(paths.InstallRoot!));
-        return run.Length > 0 &&
-            DateTime.TryParse(SessionFiles.Text(session, "startedUtc"), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var started) &&
-            started >= startedUtc.AddSeconds(-5) ? run : null;
+        return run.Length > 0 ? run : null;
     }
 
     // The newest run folder, whatever started it, or null.

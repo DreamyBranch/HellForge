@@ -49,7 +49,8 @@ public partial class MainWindow : Window
     SelectableTextBlock? runPathText, profilePathText;
     TaskCompletionSource<bool>? confirm;
     string? runDirectory;
-    DateTime launchedUtc;
+    string? previousRunId;
+    bool runLookupPending;
     // The first launch of a new installation can stop in the cryo pod: the client asks for /SeasonPass and then never
     // reaches its Pes requests (HellForge's startup research notes). The next launch goes through.
     static readonly TimeSpan IntroStallAfter = TimeSpan.FromSeconds(45);
@@ -182,7 +183,8 @@ public partial class MainWindow : Window
     {
         if (runner.IsRunning) return;
         runDirectory = null;  // Forget the previous run so its final state does not overwrite this one.
-        launchedUtc = default;
+        previousRunId = null;
+        runLookupPending = false;
         if (!SessionRunner.IsSupported)
         {
             SetStatus(SessionRunner.UnsupportedMessage, Phase.Idle);
@@ -203,7 +205,6 @@ public partial class MainWindow : Window
         seasonPassUtc = null;
         reachedShip = false;
         stopRequested = false;
-        launchedUtc = DateTime.UtcNow;
         lines.Clear();
         modProblemsShown = false;
         Append("Starting play session.", LauncherLine);
@@ -215,19 +216,20 @@ public partial class MainWindow : Window
         try { gameOptions = HellForge.Core.GameLaunchOptions.Parse(LaunchOptionsBox.Text); }
         catch (InvalidDataException error)
         {
-            launchedUtc = default;
             SetStatus("The launch options cannot be used.", Phase.Failed, failure: error.Message + " (Settings, Launch options)");
             return;
         }
         if (gameOptions.Count > 0) Append("Launch options: " + HellForge.Core.GameLaunchOptions.CommandLine(gameOptions), LauncherLine);
         try
         {
+            previousRunId = SessionRunner.LatestRunId(paths);
+            runLookupPending = true;
             runner.Start(paths, profile, new(LocalPlayFabBox.IsChecked == true, SdkShimsBox.IsChecked == true, ProfileStore.LoadWar(paths),
                 EngineLogBox.IsChecked == true, CrashDumpBox.IsChecked == true, gameOptions));
         }
         catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException or PlatformNotSupportedException)
         {
-            launchedUtc = default;
+            runLookupPending = false;
             SetStatus("Could not start the session runner.", Phase.Failed, failure: error.Message);
             return;
         }
@@ -273,7 +275,7 @@ public partial class MainWindow : Window
     void RefreshState()
     {
         ShowProfile();
-        if (runDirectory == null && launchedUtc != default) FindRun();
+        if (runDirectory == null && runLookupPending) FindRun();
         if (runDirectory != null)
         {
             foreach (var line in requests.ReadNewLines(Path.Combine(runDirectory, "backend", "requests.jsonl"))) AppendRequest(line);
@@ -301,14 +303,15 @@ public partial class MainWindow : Window
                         : "See " + Path.Combine(paths.InstallRoot, "logs", "session-runner.log") + " for why.";
                 SetStatus("The session runner exited before starting.", Phase.Failed, failureLogs);
             }
-            launchedUtc = default;
+            runLookupPending = false;
         }
     }
 
     void FindRun()
     {
-        if (SessionRunner.RunSince(paths, launchedUtc) is not { } run) return;
+        if (SessionRunner.RunSince(paths, previousRunId) is not { } run) return;
         runDirectory = run;
+        runLookupPending = false;
         if (runPathText != null) runPathText.Text = run;
     }
 
