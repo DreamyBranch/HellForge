@@ -30,6 +30,24 @@ if [ $# -gt 0 ]; then "$PROTON" run "$@" || true; else "$PROTON" run "$INSTALL/H
 # launcher must not be included: it stays open after the game exits and would keep this wrapper waiting indefinitely.
 if [ "${HELLFORGE_WAIT_FOR_PROCESSES:-1}" != 0 ]; then
   pat='HellForge\.(Session|Cli|SteamProbe)|LocalBackend|helldivers2'
-  for _ in $(seq 1 30); do pgrep -u "$(id -u)" -f "$pat" >/dev/null && break; sleep 1; done
-  while pgrep -u "$(id -u)" -f "$pat" >/dev/null; do sleep 2; done
+  # Scope the wait to this launch's process group so another HellForge probe or session cannot hold it open.
+  # The wrapper and its parents contain the Windows executable path in their arguments, so ignore that ancestry too.
+  session_pgid="$(ps -o pgid= -p "$$" | tr -d '[:space:]')"
+  [[ "$session_pgid" =~ ^[0-9]+$ ]] || { echo "Could not determine the session process group." >&2; exit 1; }
+  wrapper_pids=" $$"
+  parent=$PPID
+  while [[ "$parent" =~ ^[0-9]+$ ]] && [ "$parent" -gt 1 ]; do
+    wrapper_pids+=" $parent"
+    parent="$(ps -o ppid= -p "$parent" 2>/dev/null | tr -d '[:space:]')"
+  done
+  wrapped_process_running() {
+    local pid
+    while IFS= read -r pid; do
+      case "$wrapper_pids" in *" $pid "*) continue ;; esac
+      return 0
+    done < <(pgrep -u "$(id -u)" -g "$session_pgid" -f "$pat" || true)
+    return 1
+  }
+  for _ in $(seq 1 30); do wrapped_process_running && break; sleep 1; done
+  while wrapped_process_running; do sleep 2; done
 fi
