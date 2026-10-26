@@ -71,6 +71,9 @@ On `dev`, since 0.3.0-beta.
   complete by then.
 - Profile backups: every import or restore first saves the profile, the newest 10 are kept, and Profile lists them with
   Restore backup (#45).
+- Crash reports: after a session ends in a crash, the Play page offers Save crash report, a zip for a GitHub issue with
+  the versions, Windows, GPU, settings and mods, the crash note and the logs, scrubbed of Steam ids, names and paths
+  (a crash dump only if you say yes). Every `session.log` now starts with those facts (#70).
 
 ### Changed
 
@@ -153,6 +156,8 @@ See [docs/external-launchers.md](docs/external-launchers.md).
   `ownershipCheck` (`full` or `recent`) and, for a reused check, `ownershipConfirmedUtc` (#69).
 - `languages` lists the language packs pinned for the supported build, and `language-add --name <language>` copies one
   from Steam's download into the game copy. `status` prints `languages`, the packs in the copy (#73).
+- `logs --crash-report <file.zip> [--dump yes|no]` makes the crash report of a session that crashed, and `result.json`
+  gains `report`, the opening facts of `session.log` (#70).
 
 ### For contributors
 
