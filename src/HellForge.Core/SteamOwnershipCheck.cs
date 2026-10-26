@@ -71,8 +71,9 @@ public static class SteamOwnershipCheck
         return process.ExitCode;
     }
 
-    // Linux setup runs the same probe through the installation's wrapper and Proton. The wrapper keeps Steam bridged,
-    // performs its namespace self-test, and waits for the probe process to exit.
+    // Linux setup runs the same probe through the installation's wrapper and Proton. The wrapper keeps Steam bridged
+    // and performs its namespace self-test. Some Proton versions keep the probe process alive after it has written its
+    // final report, so the report is authoritative and avoids waiting for unrelated shutdown work.
     public static int RunProbeThroughLinuxWrapper(string wrapper, string proton, string installRoot, string prefix, string steamRoot,
         string probe, string steamApi, string workRoot, string evidencePath, TimeSpan timeout)
     {
@@ -104,13 +105,34 @@ public static class SteamOwnershipCheck
         start.Environment["HELLFORGE_SKIP_LIVE_WAR"] = "1";
         start.Environment["HELLFORGE_WAIT_FOR_PROCESSES"] = "0";
         using var process = Process.Start(start) ?? throw new InvalidDataException("The Linux Steam ownership check did not start.");
-        if (!process.WaitForExit((int)timeout.TotalMilliseconds))
+        var timer = Stopwatch.StartNew();
+        while (timer.Elapsed < timeout)
         {
-            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
-            throw new InvalidDataException("The Steam ownership check timed out.");
+            if (process.WaitForExit(200))
+            {
+                if (File.Exists(report)) File.Copy(report, evidencePath, overwrite: true);
+                return File.Exists(report) ? RunProbeReportExit(report) : process.ExitCode;
+            }
+
+            if (!File.Exists(report)) continue;
+            try
+            {
+                var reportExit = RunProbeReportExit(report);
+                File.Copy(report, evidencePath, overwrite: true);
+                if (!process.WaitForExit(1000))
+                {
+                    try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                }
+                return reportExit;
+            }
+            catch (JsonException)
+            {
+                // The probe may still be writing its result; retry until the report is complete or the deadline passes.
+            }
         }
-        if (File.Exists(report)) File.Copy(report, evidencePath, overwrite: true);
-        return File.Exists(report) ? RunProbeReportExit(report) : process.ExitCode;
+
+        try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+        throw new InvalidDataException("The Steam ownership check timed out before writing a complete result.");
     }
 
     static int RunProbeReportExit(string report)
