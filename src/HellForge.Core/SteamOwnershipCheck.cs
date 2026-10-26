@@ -102,6 +102,7 @@ public static class SteamOwnershipCheck
         start.Environment["STEAM_COMPAT_DATA_PATH"] = prefix;
         start.Environment["HELLFORGE_WORKING_DIRECTORY"] = run;
         start.Environment["HELLFORGE_SKIP_LIVE_WAR"] = "1";
+        start.Environment["HELLFORGE_WAIT_FOR_PROCESSES"] = "0";
         using var process = Process.Start(start) ?? throw new InvalidDataException("The Linux Steam ownership check did not start.");
         if (!process.WaitForExit((int)timeout.TotalMilliseconds))
         {
