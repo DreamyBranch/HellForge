@@ -47,16 +47,37 @@ export flags, and the source DLL's SHA-256. **Commit and push `steam-export-mani
 `steam_api64.dll`.**
 
 On GitHub, open **Actions → Build Linux package → Run workflow** on the branch containing that JSON. The Windows runner
-checks the manifest's recorded source hash against the supported-build pin, builds the engine and package, and publishes an
-artifact containing `HellForge-Linux.zip`, the engine package, and the Windows setup executable. Download
-`HellForge-Linux.zip` from that workflow run's Artifacts section, then follow [Setting it up](#setting-it-up).
+checks the manifest's recorded source hash against the supported-build pin, builds the engine and package, and publishes
+`HellForge-Linux-package` (the app zip, engine package, and Windows setup executable) plus the separate
+`HellForge-Linux-Installer` graphical installer artifact. Download the latter from that workflow run's Artifacts section,
+then follow [Setting it up](#setting-it-up).
 The run will stop with a clear error if the manifest is missing or does not match the supported build.
 
 ## Setting it up
 
-The commands use `~/.local/share/hellforge-prefix` as HellForge's own Wine prefix and `~/.local/share/Steam` as the
-Steam folder. Any empty folder works as the prefix. If your Steam is elsewhere (`~/.steam/debian-installation` on some
-Debian and Ubuntu installs), use that folder.
+### Graphical install
+
+The workflow also publishes a `HellForge-Linux-Installer` artifact. Download that artifact from the successful Actions
+run and extract its downloaded ZIP with your desktop's archive manager. Extract the resulting
+`HellForge-Linux-Installer.tar.gz` with the archive manager too, then open the extracted folder and launch
+`HellForge.Launcher`. If your desktop asks, choose **Run** or **Allow executing file as program**.
+
+The installer finds Steam and Proton, initializes a dedicated prefix at
+`~/.local/share/hellforge-prefix` (or the folder you choose), extracts HellForge, and opens the native launcher. The
+setup wizard starts automatically for a fresh installation. You do not need to run `unzip`, `chmod`, or `wineboot`
+yourself. This removes the terminal-based installation steps, but it does not automate acquiring the supported game
+build: when that build is not already available, the setup wizard still asks you to enter its three
+`download_depot` commands in Steam's console. The commands are not run in a Linux terminal.
+
+Steam, Proton, and the Linux tools listed in [What you need](#what-you-need) still need to be installed. On systems
+that restrict unprivileged network namespaces, the one-time administrator permission described below is also required;
+the offline network block is not bypassed.
+
+### Manual install
+
+The commands below use `~/.local/share/hellforge-prefix` as HellForge's own Wine prefix and `~/.local/share/Steam` as
+the Steam folder. Any empty folder works as the prefix. If your Steam is elsewhere (`~/.steam/debian-installation` on
+some Debian and Ubuntu installs), use that folder.
 
 1. Install the programs from [What you need](#what-you-need).
 2. Extract the Linux package into the prefix's C: drive. The first launcher start creates `hellforge-install.json` and
