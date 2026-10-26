@@ -414,6 +414,7 @@ Test("A supported build lists depot files only, pins the build, and verifies a c
     File.WriteAllBytes(asset + GameSettings.OriginalSuffix, assetBytes);
     File.AppendAllText(asset, " rewritten by a session");
     Check(build.IsComplete(source), "A file rewritten from its kept original made the copy incomplete.");
+    Check(build.Verify(source).Count == 0, "A rewritten file with a verified original failed verification.");
     File.Delete(asset + GameSettings.OriginalSuffix);
     Check(!build.IsComplete(source), "A resized file passed the completeness check.");
     File.WriteAllBytes(asset, assetBytes);

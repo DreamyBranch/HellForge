@@ -44,7 +44,12 @@ public partial class MainWindow
         foreach (var name in SetupStepNames)
         {
             var dot = new Border { Classes = { "dot" }, Background = Pending, VerticalAlignment = VerticalAlignment.Top, Margin = new(0, 5, 14, 0) };
-            var title = new TextBlock { Text = name, FontWeight = FontWeight.SemiBold };
+            var title = new TextBlock
+            {
+                Text = OperatingSystem.IsLinux() && name == SetupStepNames[(int)SetupStep.Find]
+                    ? "Find supported game files" : name,
+                FontWeight = FontWeight.SemiBold
+            };
             var detail = new TextBlock { Classes = { "muted" }, FontSize = 12, TextWrapping = TextWrapping.Wrap };
             var row = new DockPanel();
             DockPanel.SetDock(dot, Dock.Left);
@@ -67,7 +72,7 @@ public partial class MainWindow
                 : $"{Privacy.Scrub(install.Root)}  ·  Complete setup natively with Steam for Linux.";
             UninstallButton.IsVisible = false;
             DesktopShortcutBox.IsVisible = StartMenuShortcutBox.IsVisible = ImportBox.IsVisible = false;
-            SetupIntro.Text = "Setup reads Steam's depot downloads directly, copies the supported build into this installation and verifies every file against Steam's hashes. Steam ownership and the Linux network namespace are checked before setup completes.";
+            SetupIntro.Text = "Setup first checks this installation's game folder and reuses it if it already contains the supported build. Otherwise, it reads Steam's depot downloads directly and copies the build here. Steam ownership and the Linux network namespace are checked before setup completes.";
             if (!SupportedBuild.Current.IsComplete(install.Game)) EnterSetup(repair: false);
             return;
         }
@@ -350,38 +355,55 @@ public partial class MainWindow
         await Task.Run(() => EnginePackageInstaller.Install(install));
 
         var build = SupportedBuild.Current;
-        SteamGame? game;
-        string? unusable = null;
-        try { game = await Task.Run(() => SteamLocator.FindGame(steamRoot)); }
-        catch (Exception error) when (error is InvalidDataException or IOException) { game = null; unusable = error.Message; }
-
         var fromDepots = false;
+        var existingGame = false;
         string? source = null;
-        if (game is { SupportedBuild: true })
+        SetRow(step, null, "Checking the existing HellForge game folder...", running: true);
+        if (await Task.Run(() => build.IsComplete(install.Game) &&
+            build.Verify(install.Game, install.VerifyCache).Count == 0))
         {
-            source = game.Report.Source;
-            SetRow(step, true, $"Supported build {game.Report.Pin.BuildId} in {source}");
-        }
-        else if (await Task.Run(() => SteamDepotDownload.IsComplete(steamRoot, build)))
-        {
-            fromDepots = true;
-            SetRow(step, true, $"Supported build {build.BuildId} downloaded by Steam into {SteamDepotDownload.ContentFolder(steamRoot, build)}");
+            existingGame = true;
+            SetRow(step, true, $"Supported build {build.BuildId} already verified in {Privacy.Scrub(install.Game)}");
         }
         else
         {
-            ShowDownload(steamRoot, game == null
-                ? unusable == null ? "no supported game build" : "an unusable HELLDIVERS 2 installation"
-                : $"unsupported HELLDIVERS 2 build {game.Report.Pin.BuildId}");
-            throw new SetupWaiting("Steam needs to finish downloading the three supported-build depots before setup can continue.");
+            SteamGame? game;
+            string? unusable = null;
+            try { game = await Task.Run(() => SteamLocator.FindGame(steamRoot)); }
+            catch (Exception error) when (error is InvalidDataException or IOException) { game = null; unusable = error.Message; }
+
+            if (game is { SupportedBuild: true })
+            {
+                source = game.Report.Source;
+                SetRow(step, true, $"Supported build {game.Report.Pin.BuildId} in {source}");
+            }
+            else if (await Task.Run(() => SteamDepotDownload.IsComplete(steamRoot, build)))
+            {
+                fromDepots = true;
+                SetRow(step, true, $"Supported build {build.BuildId} downloaded by Steam into {SteamDepotDownload.ContentFolder(steamRoot, build)}");
+            }
+            else
+            {
+                ShowDownload(steamRoot, game == null
+                    ? unusable == null ? "no supported game build" : "an unusable HELLDIVERS 2 installation"
+                    : $"unsupported HELLDIVERS 2 build {game.Report.Pin.BuildId}");
+                throw new SetupWaiting("Steam needs to finish downloading the three supported-build depots before setup can continue.");
+            }
         }
 
         setupCancel = new();
         var token = setupCancel.Token;
         step = SetupStep.Copy;
-        SetRow(step, null, "Copying and verifying game files...", running: true);
-        await CopyGame(source, steamRoot, install);
-        token.ThrowIfCancellationRequested();
-        var copied = $"{build.Files.Count} files ({build.TotalBytes / 1e9:0.0} GB), each verified against Steam's hashes.";
+        string copied;
+        if (existingGame)
+            copied = $"{build.Files.Count} existing files ({build.TotalBytes / 1e9:0.0} GB) verified against Steam's hashes; no download or copy needed.";
+        else
+        {
+            SetRow(step, null, "Copying and verifying game files...", running: true);
+            await CopyGame(source, steamRoot, install);
+            token.ThrowIfCancellationRequested();
+            copied = $"{build.Files.Count} files ({build.TotalBytes / 1e9:0.0} GB), each verified against Steam's hashes.";
+        }
         if (fromDepots && DeleteDownloadBox.IsChecked == true)
         {
             SetRow(step, null, copied + " Deleting Steam's download...", running: true);
