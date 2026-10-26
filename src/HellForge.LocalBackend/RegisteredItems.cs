@@ -25,9 +25,12 @@ namespace HellForge.LocalBackend;
 // /Configuration/GameClient carries the live game's cap on the difficulty level (online override 48726272, an int, "10";
 // game.dll 0x11EBB40 returns min(its own maximum, the cap)): it is raised to the level the mod added.
 // Nothing is saved to the profile, so a removed mod leaves nothing behind.
+// Premium content (docs/modding/concepts.md "Premium content"): a weapon or stratagem copied from content the player does
+// not own (OwnsBase: OwnershipFilter's rules), or registered by a mod whose declared premium list the player does not own
+// (LockedMods, from mods-stage), stays out of /Progression/inventory: the game knows it, the player cannot equip it.
 public sealed class RegisteredItems(string path)
 {
-    public sealed record Item(uint MixId, uint CopyOf, uint Stable = 0, bool IsDifficulty = false, uint Level = 0)
+    public sealed record Item(uint MixId, uint CopyOf, uint Stable = 0, bool IsDifficulty = false, uint Level = 0, string Mod = "")
     {
         public bool IsStratagem => Stable != 0;
         // Weapons: the items with children, mastery packages and progress of their own.
@@ -42,6 +45,21 @@ public sealed class RegisteredItems(string path)
     // Responses the copies are made from (the backend's startup bodies), set by LocalBackend.
     public Func<string, JsonElement?>? Source { get; set; }
 
+    // Where the mod loader writes them: the game's log folder, which is the session's run (the backend evidence folder's
+    // parent) or, sandboxed, the run's game folder, the one the game may write (PlaySession's gameOut). Read from the run,
+    // a sandboxed session lost them all: mods' weapons and stratagems, level 11 and the raised difficulty cap.
+    public static string PathFor(string evidence, bool sandboxed)
+    {
+        var run = Path.GetDirectoryName(Path.GetFullPath(evidence))!;
+        return Path.Combine(sandboxed ? Path.Combine(run, "game") : run, "registered-items.json");
+    }
+
+    // Whether the player may hold a base item; null: every base (no premium rules, as in tests and the development backend).
+    public Func<uint, bool>? OwnsBase { get; set; }
+
+    // Mods whose items stay out of the player's inventory (mods-stage's --premium-locked).
+    public IReadOnlySet<string> LockedMods { get; set; } = new HashSet<string>();
+
     public IReadOnlyList<Item> Load()
     {
         try
@@ -51,25 +69,25 @@ public sealed class RegisteredItems(string path)
             using var document = JsonDocument.Parse(stream);
             List<Item> items = [];
             foreach (var item in document.RootElement.GetProperty("items").EnumerateArray())
-            {
-                if (!item.TryGetProperty("mixId", out var id) || !id.TryGetUInt32(out var mixId) || mixId == 0 ||
-                    !item.TryGetProperty("copyOf", out var copy) || !copy.TryGetUInt32(out var copyOf))
-                    continue;
-                if (item.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String && kind.GetString() == "stratagem")
-                {
-                    if (copyOf != 0 && item.TryGetProperty("stable", out var stable) && stable.TryGetUInt32(out var stableId) && stableId != 0)
-                        items.Add(new Item(mixId, copyOf, stableId));
-                }
-                else if (item.TryGetProperty("kind", out kind) && kind.ValueKind == JsonValueKind.String && kind.GetString() == "difficulty")
-                {
-                    if (copyOf != 0 && item.TryGetProperty("level", out var level) && level.TryGetUInt32(out var levelValue) && levelValue is > 10 and <= 15)
-                        items.Add(new Item(mixId, copyOf, IsDifficulty: true, Level: levelValue));
-                }
-                else items.Add(new Item(mixId, copyOf));
-            }
+                if (Read(item) is { } registered) items.Add(registered);
             return items;
         }
         catch (Exception error) when (error is IOException or JsonException or KeyNotFoundException or InvalidOperationException) { return []; }
+    }
+
+    // One entry of the file: a weapon, a stratagem or a difficulty, or null for one that is malformed or waits (copyOf 0).
+    static Item? Read(JsonElement item)
+    {
+        if (!item.TryGetProperty("mixId", out var id) || !id.TryGetUInt32(out var mixId) || mixId == 0 ||
+            !item.TryGetProperty("copyOf", out var copy) || !copy.TryGetUInt32(out var copyOf))
+            return null;
+        if (item.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String && kind.GetString() == "stratagem")
+            return copyOf != 0 && item.TryGetProperty("stable", out var stable) && stable.TryGetUInt32(out var stableId) && stableId != 0
+                ? new Item(mixId, copyOf, stableId, Mod: ModOf(item)) : null;
+        if (item.TryGetProperty("kind", out kind) && kind.ValueKind == JsonValueKind.String && kind.GetString() == "difficulty")
+            return copyOf != 0 && item.TryGetProperty("level", out var level) && level.TryGetUInt32(out var levelValue) && levelValue is > 10 and <= 15
+                ? new Item(mixId, copyOf, IsDifficulty: true, Level: levelValue, Mod: ModOf(item)) : null;
+        return new Item(mixId, copyOf, Mod: ModOf(item));
     }
 
     // The id of a weapon's child item (an attachment's id for that weapon), as the client computes it.
@@ -196,15 +214,21 @@ public sealed class RegisteredItems(string path)
             var copy = source.DeepClone().AsObject();
             copy["id32"] = PackageFor(Id(source, "id32")!.Value, item.CopyOf, item.MixId);
             copy["requiredItems"] = new JsonArray(item.MixId);
-            uint Map(uint id) => children.TryGetValue(id, out var parent) && parent == item.CopyOf ? Rehome(id, item.CopyOf, item.MixId) : id;
-            foreach (var level in (copy["levels"] as JsonArray ?? []).OfType<JsonObject>())
-            {
-                foreach (var reward in (level["rewards"] as JsonArray ?? []).OfType<JsonObject>())
-                    if (Id(reward, "type") == 1 && Id(reward, "id32") is { } id) reward["id32"] = Map(id);
-                foreach (var unlock in (level["unlockableItems"] as JsonArray ?? []).OfType<JsonObject>())
-                    if (Id(unlock, "mixId") is { } id) unlock["mixId"] = Map(id);
-            }
+            RehomeLevels(copy, children, item);
             packages.Add((JsonNode?)copy);
+        }
+    }
+
+    // A copied mastery package's rewards and unlocks that are the base's children become the new weapon's.
+    static void RehomeLevels(JsonObject package, Dictionary<uint, uint> children, Item item)
+    {
+        uint Map(uint id) => children.TryGetValue(id, out var parent) && parent == item.CopyOf ? Rehome(id, item.CopyOf, item.MixId) : id;
+        foreach (var level in (package["levels"] as JsonArray ?? []).OfType<JsonObject>())
+        {
+            foreach (var reward in (level["rewards"] as JsonArray ?? []).OfType<JsonObject>())
+                if (Id(reward, "type") == 1 && Id(reward, "id32") is { } id) reward["id32"] = Map(id);
+            foreach (var unlock in (level["unlockableItems"] as JsonArray ?? []).OfType<JsonObject>())
+                if (Id(unlock, "mixId") is { } id) unlock["mixId"] = Map(id);
         }
     }
 
@@ -230,21 +254,51 @@ public sealed class RegisteredItems(string path)
     {
         var have = held.Select(i => Id(i, "mixId")).ToHashSet();
         var children = ChildIds();
-        foreach (var item in items)
+        foreach (var item in items.Where(i => !Locked(i)))
         {
             if (item.IsDifficulty && !have.Contains(item.CopyOf)) continue; /* not before level 10 is unlocked */
             if (have.Add(item.MixId)) held.Add((JsonNode?)new JsonObject { ["mixId"] = item.MixId, ["amount"] = 1, ["isDiscovered"] = true });
-            if (!item.IsWeapon) continue;
-            foreach (var entry in held.OfType<JsonObject>().ToList())
-                if (Id(entry, "mixId") is { } id && children.TryGetValue(id, out var parent) && parent == item.CopyOf)
-                {
-                    var mixId = Rehome(id, item.CopyOf, item.MixId);
-                    if (!have.Add(mixId)) continue;
-                    var copy = entry.DeepClone().AsObject();
-                    copy["mixId"] = mixId;
-                    held.Add((JsonNode?)copy);
-                }
+            if (item.IsWeapon) AddChildren(held, have, children, item);
         }
+    }
+
+    // The mod that registered an entry (registry.c writes its id).
+    static string ModOf(JsonElement item) => item.TryGetProperty("mod", out var owner) && owner.ValueKind == JsonValueKind.String ? owner.GetString()! : "";
+
+    // A premium mod the player does not own, or a copy of a premium base they do not own; a stratagem whose base cannot be
+    // found yet stays out too, until the game has loaded its stratagems.
+    bool Locked(Item item)
+    {
+        if (LockedMods.Contains(item.Mod)) return true;
+        if (OwnsBase == null || item.IsDifficulty) return false;
+        return BaseItem(item) is not { } baseItem || !OwnsBase(baseItem);
+    }
+
+    // The base's own item: a weapon's is copyOf; a stratagem's is the parent of the catalogue child whose itemId is its stable id.
+    uint? BaseItem(Item item)
+    {
+        if (!item.IsStratagem) return item.CopyOf;
+        if (Source?.Invoke("/Progression/items") is not { ValueKind: JsonValueKind.Array } catalogue) return null;
+        foreach (var entry in catalogue.EnumerateArray())
+            if (entry.TryGetProperty("progressionCategory", out var category) && category.TryGetInt32(out var kind) && kind == 10 &&
+                entry.TryGetProperty("itemId", out var itemId) && itemId.TryGetUInt32(out var stable) && stable == item.CopyOf &&
+                entry.TryGetProperty("parentId", out var parent) && parent.TryGetUInt32(out var parentId))
+                return parentId;
+        return null;
+    }
+
+    // The copy of every child of a weapon's base the inventory holds.
+    static void AddChildren(JsonArray held, HashSet<uint?> have, Dictionary<uint, uint> children, Item item)
+    {
+        foreach (var entry in held.OfType<JsonObject>().ToList())
+            if (Id(entry, "mixId") is { } id && children.TryGetValue(id, out var parent) && parent == item.CopyOf)
+            {
+                var mixId = Rehome(id, item.CopyOf, item.MixId);
+                if (!have.Add(mixId)) continue;
+                var copy = entry.DeepClone().AsObject();
+                copy["mixId"] = mixId;
+                held.Add((JsonNode?)copy);
+            }
     }
 
     static void RaiseDifficultyCap(JsonObject client, uint level)

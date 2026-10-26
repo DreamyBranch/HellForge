@@ -29,8 +29,9 @@ the mod's kind, and one mod can be several kinds at once (code with a data spec,
   "version": "1.0.0",
   "description": "What it changes, in a sentence or two.",
   "icon": "images/icon.png",
+  "url": "https://github.com/yourname/liberator-tweaks",
   "gameplay": true,
-  "code": { "dll": "liberator_tweaks.dll", "sdk": 13 }
+  "code": { "dll": "liberator_tweaks.dll", "sdk": 15 }
 }
 ```
 
@@ -41,11 +42,13 @@ the mod's kind, and one mod can be several kinds at once (code with a data spec,
 | `name`, `description` | what players see on the Mods page |
 | `version` | raise it for every release; friends compare it |
 | `icon` | optional: a PNG or JPEG in the mod folder; square looks best |
+| `url` | optional: where players get the mod, an `https://` address of at most 200 characters (no `http://`, user name, port or spaces). The Mods page links it, and the in-game MOD SYNC prompt shows it as GET IT to a joiner who has to install the mod themselves. Any other address is left out; a bundled mod's is never shown |
 | `gameplay` | default `true`: friends must run the same gameplay mods. Set `false` for cosmetic mods, which are not compared. A mod with stats or `componentWrites` is always gameplay; one holding only Lua patches is always cosmetic |
 | `code.dll` | the DLL's file name; HellForge builds it from `src/` |
 | `code.sdk` | the SDK version the mod needs (see [compatibility](#compatibility)) |
 | `code.prebuilt`, `code.game` | for a mod that ships its DLL ([tools](tools.md#prebuilt-mods)) |
 | `native` | declarative engine edits ([data mods](data.md#native-edits-in-the-manifest)) |
+| `premium` | optional: Arrowhead's premium content the mod recreates or builds on, such as `["dlc:super-citizen-edition"]`. Players who do not own it get none of the mod's weapons and stratagems ([premium content](#premium-content)) |
 
 A mod must change something: code, data, a data spec, stats or native edits. A manifest with none of them is refused.
 
@@ -127,7 +130,8 @@ game: use `hf_set` or `edit_entity` instead.
 ## Co-op
 
 - The modlist code. Before a friend joins, HellForge compares both players' gameplay mods: ids, versions and files (a
-  source mod's sources, not a DLL). Any difference refuses the join, and both games say which mods differ. Cosmetic
+  source mod's sources, not a DLL). Any difference refuses the join, and both games say which mods differ; the
+  joiner may then sync to the host's mods ([mods.md](../mods.md#playing-with-other-mods)). Cosmetic
   mods, packs and Lua mods are not compared. Nor is the order: friends who order the same mods differently can play
   together, but where two mods conflict, a different one may win on each machine.
 - Every machine runs its own mods. Each player's game runs the mods' code and data. A hit is applied by the machine
@@ -135,10 +139,61 @@ game: use `hf_set` or `edit_entity` instead.
   machine.
 - The host decides some things. Actions marked "host" in the reference (statuses, explosions, projectiles, the mission
   timer, Pelicans) only work on the host. `hf->session(mod, &out)` gives the role: `HF_SESSION_SOLO`, `_HOST` or
-  `_JOINER`. In co-op everyone plays with the host's Local Stats (the in-game editor's saved changes).
+  `_JOINER`. In co-op every player keeps their own Local Stats (the in-game editor's saved changes) unless the host
+  shares theirs; `hf->stats_source(mod)` (SDK 15) says which.
 - What travels between machines. New content travels as ids (stratagem types, projectile types), so a mod's content
   must exist on every machine, which the modlist code makes sure of. A network field type a mod widens is widened on
   every machine for the same reason.
+
+## Premium content
+
+Arrowhead's premium content (premium warbonds, Superstore items bought with Super Credits, and the Steam DLCs' gear)
+is a player's only when they bought it in the normal game. A player brings it into HellForge with Profile > Account
+sync, which reads their own account and seals it to their PC and Steam account. A mod that ports premium content, or
+builds on it, must follow that sync: it may not give premium content to players who have not bought it.
+
+HellForge does most of this for you.
+
+- **Copies of premium content are locked automatically.** A weapon or stratagem your mod makes as a copy of a premium
+  one (a premium warbond's weapon, a Superstore weapon, the Super Citizen Edition's MP-98 Knight) is in a player's
+  armory only when that player owns the original. It still exists on every machine, so friends with and without it
+  play together; a player without it cannot equip it.
+- **Declare what your mod recreates or builds on** in the manifest's `premium` list, when it is not a plain copy: a
+  free weapon made to play like a premium one, a premium armour's look on a free armour, a larger variant of a DLC
+  weapon. Each entry is one of:
+
+  | Entry | Owned when the player holds |
+  |---|---|
+  | `warbond:<id>` | any of that warbond's tokens (Helldivers Mobilize, `warbond:1929468580`, is everyone's) |
+  | `dlc:super-citizen-edition`, `dlc:tr-117-alpha-commander`, `dlc:tr-40-gold-eagle` | any item that Steam DLC grants |
+  | `item:<mixId>` | that item |
+
+  A warbond's id is its key under `seasonPassDetails` in HellForge's progression data (`app/progression-data.json` in an
+  installation, `data/progression-data.json` in the repository). A premium warbond sold on Steam, such as Steeled
+  Veterans, is a `warbond:` entry. A malformed entry or an unknown DLC refuses the mod, and a warbond or item no game
+  data names is never owned, so a typo never unlocks anything.
+
+  ```json
+  {
+    "format": 1,
+    "id": "yourname.knight-carbine",
+    "name": "Knight Carbine",
+    "version": "1.0.0",
+    "premium": ["dlc:super-citizen-edition"],
+    "code": { "dll": "knight_carbine.dll", "sdk": 15 }
+  }
+  ```
+
+- **What a player who does not own all of the list gets:** a gameplay mod still loads (friends keep running the same
+  mods), but none of the weapons and stratagems it adds are in their armory. A cosmetic mod (`"gameplay": false`) is not
+  loaded for them. The Mods page tags the mod PREMIUM, or PREMIUM: LOCKED for the selected profile, and its details say
+  what is missing. A player who has not synced owns nothing premium.
+- **Your code's own effects are yours to gate.** HellForge locks items, not logic: a code mod that recreates a premium
+  booster's or armour passive's effect must not apply it for players without the content. Until the SDK has an
+  ownership call, give such effects only to the items HellForge locks, or leave them out.
+
+Cosmetic packs in the community's format have no `hellforge-mod.json` and cannot declare premium content: ship a
+premium look as a data mod with a manifest instead.
 
 ## Load order and conflicts
 
@@ -160,7 +215,7 @@ page.
 ## Compatibility
 
 - SDK versions. The manifest's `code.sdk` is the SDK the mod needs. A HellForge with an older SDK refuses the mod
-  ("needs HellForge mod SDK 14; this HellForge provides SDK 13"), and newer ones load it. Functions are only ever added
+  ("needs HellForge mod SDK 16; this HellForge provides SDK 15"), and newer ones load it. Functions are only ever added
   at the end of `HfApi`, so a mod built for SDK 6 runs on SDK 13. In code, check what you use:
 
   ```c
@@ -200,7 +255,7 @@ would pass a limit returns 0 (`hook` returns non-zero), and the mod's log says w
 
 A code mod runs inside the game with the player's permissions, and the loader does not catch its crashes: a crash in
 your code ends the game, and `modloader.log` names where it happened ([debugging](debugging.md#crashes)). Players should
-only enable code mods from people they trust. Everything runs in HellForge's offline copy; the normal game is never
-touched.
+only enable code mods from people they trust. Everything runs in HellForge's own local copy; the normal game is
+never touched.
 
 Next: [Stats mods](stats-mods.md), number changes without code.
