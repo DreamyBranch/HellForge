@@ -1,6 +1,9 @@
 name: Build Linux package
 
 on:
+  push:
+    branches:
+      - dreamybranch-native-linux-launcher
   workflow_dispatch:
 
 permissions:
