@@ -293,7 +293,13 @@ public partial class MainWindow : Window
             else
             {
                 FailCurrentStep();
-                SetStatus("The session runner exited before starting.", Phase.Failed, paths.InstallRoot != null ? "See " + Path.Combine(paths.InstallRoot, "logs", "session-runner.log") + " for why." : "Sessions run in installations made with HellForge-Setup.");
+                var failureLogs = paths.InstallRoot == null ? "Sessions run in installations made with HellForge-Setup."
+                    : OperatingSystem.IsLinux()
+                        ? "Check " + Path.Combine(paths.InstallRoot, "logs", "linux-session-wrapper.log") +
+                            " for Bash/Proton output and " + Path.Combine(paths.InstallRoot, "logs", "session-runner.log") +
+                            " for errors after the Windows session runner starts."
+                        : "See " + Path.Combine(paths.InstallRoot, "logs", "session-runner.log") + " for why.";
+                SetStatus("The session runner exited before starting.", Phase.Failed, failureLogs);
             }
             launchedUtc = default;
         }

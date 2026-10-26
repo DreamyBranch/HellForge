@@ -24,6 +24,17 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# A native GUI launcher has no terminal to show wrapper/Proton output. Keep the latest launch diagnostics in the
+# installation so failures before HellForge.Session creates its own run folder are still visible to the player.
+if [ -n "${INSTALL:-}" ] && [ -f "$INSTALL/hellforge-install.json" ]; then
+  if mkdir -p "$INSTALL/logs"; then
+    : > "$INSTALL/logs/linux-session-wrapper.log"
+    exec >> "$INSTALL/logs/linux-session-wrapper.log" 2>&1
+  else
+    echo "Could not create the Linux session log folder: $INSTALL/logs" >&2
+  fi
+fi
+
 # The programs these scripts run, with the install command for the package manager this system has.
 missing=""
 for program in socat ip ss unshare pgrep; do command -v "$program" >/dev/null || missing="$missing $program"; done

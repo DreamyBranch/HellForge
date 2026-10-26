@@ -135,7 +135,7 @@ the cryo pod." Press STOP, then PLAY again: the next launch goes through.
 | A message ending in "reinstall HellForge" (stand-ins, mod loader or local backend missing or changed) | Run `HellForge-Setup.exe` and pick the installation; Update keeps the game copy, profiles and settings. If it comes back, check your antivirus ([above](#antivirus)). |
 | "Windows administrator consent was not given for the network block." | Press PLAY again and answer Yes to the Windows prompt. |
 | "The launch options cannot be used." | Fix or clear Settings > Launch options; the reason shows under the box. |
-| "The session runner exited before starting." | The launcher points to `logs\session-runner.log`, which says why. |
+| "The session runner exited before starting." | On Windows, check `logs\session-runner.log`. On Linux, also check `logs/linux-session-wrapper.log` for Bash and Proton output; that file can identify failures that happen before the Windows session runner starts. |
 | "Mod left out of this session: ..." (in the Console) | The session still runs without that mod. The Mods page shows why on the mod's row ([using mods](mods.md)). |
 | "Cleanup failed." | Check the session logs before playing again. |
 
