@@ -125,6 +125,12 @@ static class NetworkBlockTests
                 "The wrapper does not guard the mod-tools download during ownership checks.");
             check(ownershipCheck.Contains("start.Environment[\"HELLFORGE_SKIP_MOD_TOOLS\"] = \"1\";", StringComparison.Ordinal),
                 "The ownership probe does not set the wrapper's mod-tools skip flag.");
+            var probeExecutable = ownershipCheck.IndexOf(
+                "start.ArgumentList.Add(WinePath.ToWinePath(request.Probe, request.Prefix));", StringComparison.Ordinal);
+            var probeArguments = ownershipCheck.IndexOf(
+                "AddProbeArguments(start, prepared, useWinePaths: true, prefix: request.Prefix);", StringComparison.Ordinal);
+            check(probeExecutable >= 0 && probeArguments > probeExecutable,
+                "The Linux wrapper receives the mapped Steam probe executable before its DLL, hash, and result arguments.");
             var prepareOnly = wrapper.IndexOf("HELLFORGE_PREPARE_MOD_TOOLS_ONLY", StringComparison.Ordinal);
             var namespaceLaunch = wrapper.IndexOf("Entering the offline network namespace.", StringComparison.Ordinal);
             var ownershipFailure = setup.IndexOf("if (exit != 0)", StringComparison.Ordinal);

@@ -96,6 +96,7 @@ public static class SteamOwnershipCheck
         var prepared = PrepareProbe(request.Probe, request.SteamApi, request.WorkRoot);
         var start = new ProcessStartInfo("bash") { WorkingDirectory = request.InstallRoot, UseShellExecute = false, CreateNoWindow = true };
         start.ArgumentList.Add(request.Wrapper);
+        start.ArgumentList.Add(WinePath.ToWinePath(request.Probe, request.Prefix));
         AddProbeArguments(start, prepared, useWinePaths: true, prefix: request.Prefix);
         start.Environment["INSTALL"] = request.InstallRoot;
         start.Environment["PROTON"] = request.Proton;
