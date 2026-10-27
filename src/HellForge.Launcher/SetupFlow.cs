@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Net.Http;
 using System.Runtime.Versioning;
 using System.Text.Json;
@@ -64,13 +65,18 @@ public partial class MainWindow
         OpenConsoleButton.Click += (_, _) => OpenSteamConsole();
         DeleteDownloadBox.Content = $"Delete Steam's download after copying (frees about {SupportedBuild.Current.TotalBytes / 1e9:0} GB)";
         RepairButton.Click += (_, _) => EnterSetup(repair: true);
+        UninstallButton.Click += (_, _) => AskUninstall(install);
+        UninstallConfirmButton.Click += async (_, _) => await Uninstall(install);
+        UninstallCancelButton.Click += (_, _) => UninstallConfirm.IsVisible = false;
         if (OperatingSystem.IsLinux())
         {
             InstallCard.IsVisible = true;
             InstallText.Text = SupportedBuild.Current.IsComplete(install.Game)
                 ? $"{Privacy.Scrub(install.Root)}  ·  HELLDIVERS 2 build {SupportedBuild.Current.BuildId}. Native setup and repair are available."
                 : $"{Privacy.Scrub(install.Root)}  ·  Complete setup natively with Steam for Linux.";
-            UninstallButton.IsVisible = false;
+            UninstallButton.IsVisible = true;
+            UninstallConfirmButton.Content = "Uninstall this installation";
+            UninstallDescription.Text = "Uninstall removes this HellForge installation and its desktop shortcut after the launcher closes. The Proton prefix, Steam files and anything outside this installation folder are left intact.";
             DesktopShortcutBox.IsVisible = StartMenuShortcutBox.IsVisible = ImportBox.IsVisible = false;
             SetupIntro.Text = "Choose a Proton version first. Setup finds the supported game files, confirms Steam ownership, then copies the game if needed and checks the Linux network namespace.";
             if (!SupportedBuild.Current.IsComplete(install.Game)) EnterSetup(repair: false);
@@ -79,9 +85,6 @@ public partial class MainWindow
         ImportBox.IsVisible = Directory.Exists(Path.Combine(EarlierGameData, "profiles")) || File.Exists(Path.Combine(EarlierGameData, "user_settings.config"));
         InstallCard.IsVisible = true;
         InstallText.Text = $"{Privacy.Scrub(install.Root)}  ·  HELLDIVERS 2 build {SupportedBuild.Current.BuildId}";
-        UninstallButton.Click += (_, _) => AskUninstall(install);
-        UninstallConfirmButton.Click += async (_, _) => await Uninstall(install);
-        UninstallCancelButton.Click += (_, _) => UninstallConfirm.IsVisible = false;
         if (!SupportedBuild.Current.IsComplete(install.Game)) EnterSetup(repair: false);
     }
 
@@ -385,11 +388,9 @@ public partial class MainWindow
         var executable = LocalInstall.FullPath(launcher);
         if (executable.Contains('\n') || executable.Contains('\r'))
             throw new InvalidDataException("The launcher path cannot be represented in a desktop shortcut.");
-        var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-        if (string.IsNullOrWhiteSpace(desktop))
-            desktop = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Desktop");
+        var desktop = Path.GetDirectoryName(LinuxDesktopShortcutPath())!;
         Directory.CreateDirectory(desktop);
-        var shortcut = Path.Combine(desktop, "HellForge.desktop");
+        var shortcut = LinuxDesktopShortcutPath();
         try
         {
             if ((File.GetAttributes(shortcut) & FileAttributes.ReparsePoint) != 0)
@@ -397,11 +398,9 @@ public partial class MainWindow
         }
         catch (FileNotFoundException) { }
         catch (DirectoryNotFoundException) { }
-        static string ExecArgument(string value) =>
-            "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("$", "\\$").Replace("`", "\\`").Replace("%", "%%") + "\"";
         File.WriteAllText(shortcut,
             "[Desktop Entry]\nType=Application\nName=HellForge\nComment=HellForge native Linux launcher\n" +
-            "Exec=" + ExecArgument(executable) + "\nTerminal=false\nCategories=Game;\n");
+            LinuxDesktopExecLine(executable) + "\nTerminal=false\nCategories=Game;\n");
         File.SetUnixFileMode(shortcut, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
             UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
         SetRow(SetupStep.Shortcuts, true, "Desktop shortcut created. Your desktop may ask you to allow launching it.");
@@ -806,9 +805,12 @@ public partial class MainWindow
     // is deleted when Windows' permission is declined, or while anything from the installation still runs.
     void AskUninstall(InstallLayout install)
     {
-        UninstallWarning.Text = $"This deletes {install.Root} and everything in it: the game copy (about 24 GB), your HellForge " +
-            "profiles and progress, every mod in its mods folder (your own too), saves and logs. Copy anything you want to keep first. " +
-            "HellForge closes when it is done.";
+        UninstallWarning.Text = OperatingSystem.IsLinux()
+            ? $"This deletes only {install.Root} and its HellForge desktop shortcut. It does not delete the Proton prefix or anything else outside this folder. " +
+              "Your game copy, profiles and progress, mods, saves and logs inside this installation will be removed. Copy anything you want to keep first. HellForge closes when it is done."
+            : $"This deletes {install.Root} and everything in it: the game copy (about 24 GB), your HellForge " +
+              "profiles and progress, every mod in its mods folder (your own too), saves and logs. Copy anything you want to keep first. " +
+              "HellForge closes when it is done.";
         UninstallConfirm.IsVisible = true;
         UninstallText.Text = "";
     }
@@ -817,8 +819,13 @@ public partial class MainWindow
     {
         UninstallConfirm.IsVisible = false;
         if (runner.IsRunning || setupRunning) { UninstallText.Text = "Stop the session (or setup) first."; return; }
-        // Linux (Wine/Proton): the removal runs Windows PowerShell, which a Wine prefix has only as a stub that does nothing.
-        if (OperatingSystem.IsLinux() || LinuxNetworkBlock.UnderWine) { UninstallText.Text = "On Linux, remove HellForge by hand: see \"Removing HellForge\" in docs/linux.md."; return; }
+        if (OperatingSystem.IsLinux())
+        {
+            UninstallLinux(install);
+            return;
+        }
+        // Under Wine, Windows PowerShell is a stub that does nothing.
+        if (LinuxNetworkBlock.UnderWine) { UninstallText.Text = "On Linux, use the native launcher to uninstall HellForge."; return; }
         var running = Process.GetProcesses().Where(p => p.Id != Environment.ProcessId && IsFrom(p, install.Root)).Select(p => p.ProcessName).Distinct().ToList();
         if (running.Count > 0) { UninstallText.Text = "Close these first: " + string.Join(", ", running) + "."; return; }
         try { UninstallSafety(install.Root); }
@@ -843,6 +850,63 @@ public partial class MainWindow
         Process.Start(new ProcessStartInfo(PowerShell, $"-NoProfile -ExecutionPolicy Bypass -File {Arg(script)} -Root {Arg(install.Root)} -Launcher {Environment.ProcessId}")
         { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetTempPath() });
         Close();
+    }
+
+    void UninstallLinux(InstallLayout install)
+    {
+        try { UninstallSafety(install.Root); }
+        catch (InvalidDataException refused) { UninstallText.Text = Privacy.Scrub(refused.Message); return; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            UninstallText.Text = Privacy.Scrub(error.Message);
+            return;
+        }
+
+        try
+        {
+            var launcher = LocalInstall.FullPath(Path.Combine(install.App, "launcher-linux", "HellForge.Launcher"));
+            var shortcut = LinuxDesktopShortcutPath();
+            var script = Path.Combine(Path.GetTempPath(), $"hellforge-uninstall-{Guid.NewGuid():N}.sh");
+            File.WriteAllText(script, """
+                #!/usr/bin/env bash
+                set -u
+                root=$1
+                launcher_pid=$2
+                shortcut=$3
+                expected_exec=$4
+                while kill -0 "$launcher_pid" 2>/dev/null; do sleep 1; done
+                if [[ -f "$shortcut" && ! -L "$shortcut" ]] && grep -Fqx -- "$expected_exec" "$shortcut"; then
+                  rm -f -- "$shortcut"
+                fi
+                rm -rf -- "$root"
+                rm -f -- "$0"
+                """);
+            var start = new ProcessStartInfo("bash") { WorkingDirectory = Path.GetTempPath(), UseShellExecute = false, CreateNoWindow = true };
+            foreach (var argument in new[] { script, install.Root, Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
+                         shortcut, LinuxDesktopExecLine(launcher) })
+                start.ArgumentList.Add(argument);
+            using var cleanup = Process.Start(start) ?? throw new IOException("The Linux uninstall helper did not start.");
+            Close();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or Win32Exception or InvalidOperationException)
+        {
+            UninstallText.Text = Privacy.Scrub(error.Message);
+        }
+    }
+
+    static string LinuxDesktopShortcutPath()
+    {
+        var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        if (string.IsNullOrWhiteSpace(desktop))
+            desktop = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Desktop");
+        return Path.Combine(desktop, "HellForge.desktop");
+    }
+
+    static string LinuxDesktopExecLine(string launcher)
+    {
+        static string ExecArgument(string value) =>
+            "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("$", "\\$").Replace("`", "\\`").Replace("%", "%%") + "\"";
+        return "Exec=" + ExecArgument(launcher);
     }
 
     // Deletes only a HellForge installation: its marker, no links in its path, and never a drive, the user's folder or

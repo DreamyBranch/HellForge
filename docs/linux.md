@@ -185,15 +185,14 @@ Close the native launcher, then replace only the install's `app` folder from the
 
 ## Removing HellForge
 
-HellForge's Uninstall button does not work on Linux; remove it by hand:
+In Settings > Installation, choose **Uninstall HellForge** and confirm. It removes this installation folder and the
+desktop shortcut created by HellForge after the launcher closes. It leaves the Proton prefix, Steam files, and anything
+outside the installation folder intact; profiles, progress, mods, saves and logs inside the installation are deleted.
+Copy anything you want to keep first.
 
-1. If you ran `allow-namespace.sh`, undo it first, while the script is still there:
-   `sudo bash <installation>/app/linux/allow-namespace.sh --remove`.
-2. Delete the prefix, if it is HellForge's own: `rm -rf ~/.local/share/hellforge-prefix`. That deletes the
-   installation with the game copy, your HellForge profiles and progress, and every mod in its mods folder, your own
-   too. Copy anything you want to keep first. In a shared prefix, delete only the installation folder.
-3. If Steam's download of the supported build is still in Steam's folder, delete its `app_553850` folder there if you
-   no longer need it.
+If you ran `allow-namespace.sh`, its optional system-wide namespace permission is not removed by uninstall. To undo it
+before deleting the installation, run `sudo bash <installation>/app/linux/allow-namespace.sh --remove`. If Steam's
+download of the supported build is still in Steam's folder, delete its `app_553850` folder there if you no longer need it.
 
 ## How it keeps the game off the internet
 
