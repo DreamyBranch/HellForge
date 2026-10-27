@@ -17,6 +17,7 @@ public sealed record SessionOptions(bool LocalPlayFab, bool SdkShims, string War
 public sealed class SessionRunner
 {
     Process? controller;
+    int? exitCode;
 
     public static bool IsSupported => OperatingSystem.IsWindows() || OperatingSystem.IsLinux();
 
@@ -24,7 +25,7 @@ public sealed class SessionRunner
 
     public bool IsRunning => controller is { HasExited: false };
     public int? ProcessId => controller?.Id;
-    public int? ExitCode => controller is { HasExited: true } ? controller.ExitCode : null;
+    public int? ExitCode => controller is { HasExited: true } ? controller.ExitCode : exitCode;
 
     // The session runner's command line (after HellForge.Session.exe). The template only matters when the backend
     // creates the profile on first use.
@@ -114,6 +115,7 @@ public sealed class SessionRunner
         // An installation keeps even temporary files inside its folder.
         var temp = Directory.CreateDirectory(Path.Combine(paths.InstallRoot!, "temp")).FullName;
         start.Environment["TEMP"] = start.Environment["TMP"] = temp;
+        exitCode = null;
         controller = Process.Start(start) ?? throw new InvalidOperationException("The session runner did not start.");
     }
 
@@ -160,6 +162,7 @@ public sealed class SessionRunner
     public bool CollectExited()
     {
         if (controller is not { HasExited: true }) return false;
+        exitCode = controller.ExitCode;
         controller.Dispose();
         controller = null;
         return true;

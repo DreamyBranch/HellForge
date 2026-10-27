@@ -344,15 +344,18 @@ public partial class MainWindow : Window
         if (runDirectory == null && runLookupPending) FindRun();
         if (runDirectory != null) RefreshRun();
         var runnerExited = runner.CollectExited();
+        var runnerExitCode = runner.ExitCode;
         if (runnerExited)
         {
+            // The run record can be published between this tick's first lookup and the process-exit check.
+            if (runDirectory == null && runLookupPending) FindRun();
             runLookupPending = false;
             PruneSessionLogs();
             OfferCrashReport(runDirectory);
         }
         // Mod sync: the backend stopped the session so that it starts again with the host's mods it downloaded.
         if (runnerExited && TryModSyncRestart()) return;
-        if (runnerExited && runDirectory == null) HandleEarlyExit();
+        if (runnerExited && runDirectory == null) HandleEarlyExit(runnerExitCode);
     }
 
     // While a run folder exists: new backend requests, the latest result.json (or mod-build progress before it), the mod-sync card.
@@ -378,7 +381,7 @@ public partial class MainWindow : Window
     }
 
     // The session runner exited before a run folder appeared: cancelled before launch, or an early failure.
-    void HandleEarlyExit()
+    void HandleEarlyExit(int? exitCode)
     {
         if (stopRequested)
         {
@@ -394,7 +397,8 @@ public partial class MainWindow : Window
                         " for Bash/Proton output and " + Path.Combine(paths.InstallRoot, "logs", "session-runner.log") +
                         " for errors after the Windows session runner starts."
                     : "See " + Path.Combine(paths.InstallRoot, "logs", "session-runner.log") + " for why.";
-            SetStatus("The session runner exited before starting.", Phase.Failed, failureLogs);
+            SetStatus("The session runner exited before starting.", Phase.Failed, failureLogs,
+                exitCode is { } code ? $"The launch process exited with code {code}." : null);
         }
         runLookupPending = false;
     }

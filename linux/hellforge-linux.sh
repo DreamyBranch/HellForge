@@ -107,9 +107,14 @@ fi
 # Steam's bridge: the one running, else one of our own for as long as HellForge runs.
 dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 bridge=""
-cleanup() { if [ -n "$bridge" ]; then kill "$bridge" 2>/dev/null || true; wait "$bridge" 2>/dev/null || true; fi; }
+cleanup() {
+  local status=$?
+  echo "HellForge wrapper exiting with code $status."
+  if [ -n "$bridge" ]; then kill "$bridge" 2>/dev/null || true; wait "$bridge" 2>/dev/null || true; fi
+}
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+trap 'echo "HellForge wrapper received SIGINT."; exit 130' INT
+trap 'echo "HellForge wrapper received SIGTERM."; exit 143' TERM
 # a bridge answers on its sockets (ones left by a bridge that was killed do not)
 bridged() { for s in "$dir"/hf-steam-*.sock; do [ -S "$s" ] && socat -u OPEN:/dev/null UNIX-CONNECT:"$s" 2>/dev/null && return 0; done; return 1; }
 if ! bridged; then
@@ -146,4 +151,11 @@ if [ -n "$pin" ] && ! zigReady; then
 fi
 
 # Run through bash, so the scripts work without their executable bit (lost when copied from Windows or unpacked by setup).
-bash "$here/hellforge-offline.sh" bash "$here/hf-inner.sh" "$@"
+echo "Entering the offline network namespace."
+if bash "$here/hellforge-offline.sh" bash "$here/hf-inner.sh" "$@"; then
+  echo "Offline namespace command completed."
+else
+  status=$?
+  echo "Offline namespace command exited with code $status." >&2
+  exit "$status"
+fi
