@@ -333,9 +333,39 @@ public partial class MainWindow
         }
 
         SetRow(SetupStep.Import, true, "Skipped on Linux.");
-        SetRow(SetupStep.Shortcuts, true, "Skipped on Linux.");
+        CreateLinuxDesktopShortcut(install);
         await SyncBundledMods(install);
         ReadyToPlay();
+    }
+
+    void CreateLinuxDesktopShortcut(InstallLayout install)
+    {
+        if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException("Linux desktop shortcuts are only supported on Linux.");
+        var launcher = Path.Combine(install.App, "launcher-linux", "HellForge.Launcher");
+        if (!File.Exists(launcher)) throw new SetupStopped("The native Linux launcher is missing: " + launcher);
+        var executable = LocalInstall.FullPath(launcher);
+        if (executable.Contains('\n') || executable.Contains('\r'))
+            throw new InvalidDataException("The launcher path cannot be represented in a desktop shortcut.");
+        var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        if (string.IsNullOrWhiteSpace(desktop))
+            desktop = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Desktop");
+        Directory.CreateDirectory(desktop);
+        var shortcut = Path.Combine(desktop, "HellForge.desktop");
+        try
+        {
+            if ((File.GetAttributes(shortcut) & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("The desktop shortcut path is a link; remove it and run setup again.");
+        }
+        catch (FileNotFoundException) { }
+        catch (DirectoryNotFoundException) { }
+        static string ExecArgument(string value) =>
+            "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("$", "\\$").Replace("`", "\\`").Replace("%", "%%") + "\"";
+        File.WriteAllText(shortcut,
+            "[Desktop Entry]\nType=Application\nName=HellForge\nComment=HellForge native Linux launcher\n" +
+            "Exec=" + ExecArgument(executable) + "\nTerminal=false\nCategories=Game;\n");
+        File.SetUnixFileMode(shortcut, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        SetRow(SetupStep.Shortcuts, true, "Desktop shortcut created. Your desktop may ask you to allow launching it.");
     }
 
     // Finds HELLDIVERS 2 for setup: the installed supported build, Steam's depot download, or a build patch; else offers

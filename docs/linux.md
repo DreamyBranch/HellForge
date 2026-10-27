@@ -121,9 +121,10 @@ some Debian and Ubuntu installs), use that folder.
    commands ([troubleshooting](troubleshooting.md#setup-cannot-find-the-supported-build) describes them). Open Steam's
    console with the button in the wizard (or `xdg-open steam://open/console` in a terminal), paste each command and
    press Enter. The wizard reads completed depots directly from Steam's content folder; **do not move them**. When all
-   three downloads are complete, press Check again / Start setup. The native wizard copies the game and verifies every
-   file against Steam's hashes, runs the ownership probe through Proton, and installs the namespace marker only after
-   the wrapper's offline self-test passes.
+   three downloads are complete, press Check again / Start setup. The wizard confirms Steam ownership through Proton
+   before copying the game or starting the optional Zig/mod-tools download. It then copies the game, verifies every file
+   against Steam's hashes, and installs the namespace marker only after the wrapper's offline self-test passes. After
+   successful setup, HellForge creates `~/Desktop/HellForge.desktop`; your desktop may ask you to allow launching it.
 
 When you press PLAY, the native launcher starts `app/linux/hellforge-linux.sh` with the existing
 `app/session/HellForge.Session.exe play ...` command. The wrapper still starts the session runner through Proton inside

@@ -13,6 +13,13 @@ static class NetworkBlockTests
         return null;
     }
 
+    static string? RepositoryRoot()
+    {
+        for (var folder = Directory.GetCurrentDirectory(); folder != null; folder = Path.GetDirectoryName(folder))
+            if (File.Exists(Path.Combine(folder, "linux", "hellforge-linux.sh"))) return folder;
+        return null;
+    }
+
     static void Marker(InstallLayout install, string json)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(install.NetworkBlockMarker)!);
@@ -101,6 +108,22 @@ static class NetworkBlockTests
             var refused = NoLinks(Path.Combine(linked, "game", "bin", "helldivers2.exe"));
             check(refused.StartsWith("Linked target path: " + linked + " is a link", StringComparison.Ordinal), "A path through a junction is refused, naming the junction: " + refused);
             Directory.Delete(linked);
+        });
+
+        test("Linux Steam ownership confirmation does not trigger the optional Zig download", () =>
+        {
+            if (RepositoryRoot() is not { } repository) { Console.WriteLine("  (skipped: no repository root above the test)"); return; }
+            var wrapper = File.ReadAllText(Path.Combine(repository, "linux", "hellforge-linux.sh"));
+            var ownershipCheck = File.ReadAllText(Path.Combine(repository, "src", "HellForge.Core", "SteamOwnershipCheck.cs"));
+            var skip = wrapper.IndexOf("if [ \"${HELLFORGE_SKIP_MOD_TOOLS:-}\" = 1 ]; then", StringComparison.Ordinal);
+            var alternative = skip < 0 ? -1 : wrapper.IndexOf("else", skip, StringComparison.Ordinal);
+            var download = wrapper.IndexOf("HellForge.Cli.exe\" mod-tools", StringComparison.Ordinal);
+            var end = skip < 0 ? -1 : wrapper.IndexOf("\n  fi", skip, StringComparison.Ordinal);
+            check(skip >= 0 && alternative > skip && download > alternative && end > download &&
+                wrapper.Contains("Skipping the mod-tools download for the Steam ownership check.", StringComparison.Ordinal),
+                "The wrapper does not guard the mod-tools download during ownership checks.");
+            check(ownershipCheck.Contains("start.Environment[\"HELLFORGE_SKIP_MOD_TOOLS\"] = \"1\";", StringComparison.Ordinal),
+                "The ownership probe does not set the wrapper's mod-tools skip flag.");
         });
 
         test("Network block probe: with a second loopback port it reports how both connects end", () =>

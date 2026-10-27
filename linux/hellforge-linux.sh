@@ -142,12 +142,16 @@ fi
 pin="$(grep '"name": "zig"' "$INSTALL/app/sdk/tools.json" 2>/dev/null | sed -E 's/.*"sha256": "([0-9A-Fa-f]+)".*/\1/' || true)"
 zigReady() { [ -f "$INSTALL/tools/zig/zig.exe" ] && [ "$(cat "$INSTALL/tools/zig/.hellforge-archive-sha256" 2>/dev/null)" = "$pin" ]; }
 if [ -n "$pin" ] && ! zigReady; then
-  echo "Fetching the mod tools (Zig, about 90 MB, once) to build source mods..."
-  root="Z:$(printf '%s' "$INSTALL" | tr '/' '\\')"
-  timeout 900 "$PROTON" run "$INSTALL/app/cli/HellForge.Cli.exe" mod-tools --install "$root" --ide no >/dev/null || true
-  for _ in $(seq 1 900); do pgrep -f "HellForge.Cli.exe mod-tools" >/dev/null || break; sleep 1; done
-  if zigReady; then echo "Fetched the mod tools."
-  else echo "Could not fetch the mod tools; source mods stay off until they are (start HellForge again to retry)." >&2; fi
+  if [ "${HELLFORGE_SKIP_MOD_TOOLS:-}" = 1 ]; then
+    echo "Skipping the mod-tools download for the Steam ownership check."
+  else
+    echo "Fetching the mod tools (Zig, about 90 MB, once) to build source mods..."
+    root="Z:$(printf '%s' "$INSTALL" | tr '/' '\\')"
+    timeout 900 "$PROTON" run "$INSTALL/app/cli/HellForge.Cli.exe" mod-tools --install "$root" --ide no >/dev/null || true
+    for _ in $(seq 1 900); do pgrep -f "HellForge.Cli.exe mod-tools" >/dev/null || break; sleep 1; done
+    if zigReady; then echo "Fetched the mod tools."
+    else echo "Could not fetch the mod tools; source mods stay off until they are (start HellForge again to retry)." >&2; fi
+  fi
 fi
 
 # Run through bash, so the scripts work without their executable bit (lost when copied from Windows or unpacked by setup).
