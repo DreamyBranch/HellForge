@@ -6,7 +6,7 @@ support is experimental.
 
 Linux support is the work of DreamyBranch and joshua-software-dev, who worked it out and shared it in
 [issue 1](https://github.com/SkyeShade/HellForge/issues/1). Thank you both. The setup steps below, and the dependency
-check and Steam folder search in `hellforge-linux.sh`, follow DreamyBranch's guided install script in
+check and Steam folder search in `hellforge-linux.sh`, follow NO LONGER NEEDED DreamyBranch's guided install script in
 [issue 11](https://github.com/SkyeShade/HellForge/issues/11). The scripts are in `linux/` (in an installation:
 `app/linux/`).
 
