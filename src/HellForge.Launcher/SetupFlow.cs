@@ -72,7 +72,7 @@ public partial class MainWindow
                 : $"{Privacy.Scrub(install.Root)}  ·  Complete setup natively with Steam for Linux.";
             UninstallButton.IsVisible = false;
             DesktopShortcutBox.IsVisible = StartMenuShortcutBox.IsVisible = ImportBox.IsVisible = false;
-            SetupIntro.Text = "Choose a Proton version first. Setup checks this installation's game folder and reuses it if it already contains the supported build. Otherwise, it reads Steam's depot downloads directly and copies the build here. Steam ownership and the Linux network namespace are checked before setup completes.";
+            SetupIntro.Text = "Choose a Proton version first. Setup finds the supported game files, confirms Steam ownership, then copies the game if needed and checks the Linux network namespace.";
             if (!SupportedBuild.Current.IsComplete(install.Game)) EnterSetup(repair: false);
             return;
         }
@@ -167,7 +167,7 @@ public partial class MainWindow
             {
                 if (proton == null) throw new SetupStopped("Choose an installed Proton version before continuing setup.");
                 SteamLocator.SaveProtonSelection(install, proton.ScriptPath);
-                await RunLinuxSetup(install, proton.ScriptPath);
+                await RunLinuxSetup(install, proton.ScriptPath, currentStep => step = currentStep);
                 return;
             }
             var found = await FindGameStep(install);
@@ -218,9 +218,15 @@ public partial class MainWindow
         }
     }
 
-    async Task RunLinuxSetup(InstallLayout install, string proton)
+    async Task RunLinuxSetup(InstallLayout install, string proton, Action<SetupStep> reportStep)
     {
         var step = SetupStep.Find;
+        void SetStep(SetupStep current)
+        {
+            step = current;
+            reportStep(current);
+        }
+
         SetRow(step, null, "Checking Steam, Proton and the engine package...", running: true);
         var steamRoot = SteamLocator.SteamRoot() ?? throw new SetupStopped("Steam was not found. Start Steam and sign in, then try setup again.");
         if (!File.Exists(proton)) throw new SetupStopped("The selected Proton version is no longer installed. Choose another version and try again.");
@@ -235,11 +241,13 @@ public partial class MainWindow
         var fromDepots = false;
         var existingGame = false;
         string? source = null;
+        string? steamApi = null;
         SetRow(step, null, "Checking the existing HellForge game folder...", running: true);
         if (await Task.Run(() => build.IsComplete(install.Game) &&
             build.Verify(install.Game, install.VerifyCache).Count == 0))
         {
             existingGame = true;
+            steamApi = Path.Combine(install.Game, "bin", "steam_api64.dll");
             SetRow(step, true, $"Supported build {build.BuildId} already verified in {Privacy.Scrub(install.Game)}");
         }
         else
@@ -252,11 +260,13 @@ public partial class MainWindow
             if (game is { SupportedBuild: true })
             {
                 source = game.Report.Source;
+                steamApi = Path.Combine(source, "bin", "steam_api64.dll");
                 SetRow(step, true, $"Supported build {game.Report.Pin.BuildId} in {source}");
             }
             else if (await Task.Run(() => SteamDepotDownload.IsComplete(steamRoot, build)))
             {
                 fromDepots = true;
+                steamApi = SteamDepotDownload.Locate(steamRoot, build, build.Files.Single(file => file.Path == "bin/steam_api64.dll"));
                 SetRow(step, true, $"Supported build {build.BuildId} downloaded by Steam into {SteamDepotDownload.ContentFolder(steamRoot, build)}");
             }
             else
@@ -268,9 +278,32 @@ public partial class MainWindow
             }
         }
 
+        SetStep(SetupStep.Ownership);
+        SetRow(step, null, "Confirming Steam ownership through Proton...", running: true);
+        var evidence = Path.Combine(install.Logs, "setup-ownership.json");
+        var checkStarted = DateTime.UtcNow;
+        if (File.Exists(evidence)) File.Delete(evidence);
+        int exit;
+        string errorMessage;
+        var ownershipSteamApi = steamApi ?? throw new InvalidDataException("The supported build's Steam API library was not found.");
+        try
+        {
+            exit = await Task.Run(() => SteamOwnershipCheck.RunProbeThroughLinuxWrapper(wrapper, proton, install.Root,
+                WinePath.PrefixFromInstallRoot(install.Root), steamRoot, probe, ownershipSteamApi, Path.Combine(install.Temp, "ownership"),
+                evidence, TimeSpan.FromSeconds(60)));
+            errorMessage = "";
+        }
+        catch (InvalidDataException error) { exit = 1; errorMessage = error.Message; }
+        if (exit == 0 && SteamOwnershipCheck.Problem(evidence, checkStarted) is { } problem) (exit, errorMessage) = (1, problem + ".");
+        if (exit != 0)
+            throw new SetupStopped("The ownership check did not pass: " +
+                (errorMessage.Length > 0 ? errorMessage : $"exit code {exit}.") +
+                " Make sure Steam is running and signed in to an account that owns HELLDIVERS 2.");
+        SetRow(step, true, "Steam confirmed the game on this account.");
+
         setupCancel = new();
         var token = setupCancel.Token;
-        step = SetupStep.Copy;
+        SetStep(SetupStep.Copy);
         string copied;
         if (existingGame)
             copied = $"{build.Files.Count} existing files ({build.TotalBytes / 1e9:0.0} GB) verified against Steam's hashes; no download or copy needed.";
@@ -290,30 +323,7 @@ public partial class MainWindow
         DownloadCard.IsVisible = false;
         SetRow(step, true, copied);
 
-        step = SetupStep.Ownership;
-        SetRow(step, null, "Confirming Steam ownership through Proton...", running: true);
-        var steamApi = Path.Combine(install.Game, "bin", "steam_api64.dll");
-        var evidence = Path.Combine(install.Logs, "setup-ownership.json");
-        var checkStarted = DateTime.UtcNow;
-        if (File.Exists(evidence)) File.Delete(evidence);
-        int exit;
-        string errorMessage;
-        try
-        {
-            exit = await Task.Run(() => SteamOwnershipCheck.RunProbeThroughLinuxWrapper(wrapper, proton, install.Root,
-                WinePath.PrefixFromInstallRoot(install.Root), steamRoot, probe, steamApi, Path.Combine(install.Temp, "ownership"),
-                evidence, TimeSpan.FromSeconds(60)), token);
-            errorMessage = "";
-        }
-        catch (InvalidDataException error) { exit = 1; errorMessage = error.Message; }
-        if (exit == 0 && SteamOwnershipCheck.Problem(evidence, checkStarted) is { } problem) (exit, errorMessage) = (1, problem + ".");
-        if (exit != 0)
-            throw new SetupStopped("The ownership check did not pass: " +
-                (errorMessage.Length > 0 ? errorMessage : $"exit code {exit}.") +
-                " Make sure Steam is running and signed in to an account that owns HELLDIVERS 2.");
-        SetRow(step, true, "Steam confirmed the game on this account.");
-
-        step = SetupStep.NetworkBlock;
+        SetStep(SetupStep.NetworkBlock);
         SetRow(step, null, "Checking the offline network namespace...", running: true);
         if (LinuxNetworkBlock.InPlace(install.Root)) SetRow(step, true, "The network namespace marker is already in place.");
         else
