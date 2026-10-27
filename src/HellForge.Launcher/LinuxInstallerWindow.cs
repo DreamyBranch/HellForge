@@ -15,8 +15,10 @@ sealed class LinuxInstallerWindow : Window
 {
     readonly string payload;
     readonly TextBox prefixPath;
+    readonly ComboBox protonChoice;
     readonly TextBlock status;
     readonly Button installButton;
+    readonly IReadOnlyList<ProtonVersion> protons;
 
     public LinuxInstallerWindow(string payload)
     {
@@ -33,13 +35,33 @@ sealed class LinuxInstallerWindow : Window
         var defaultPrefix = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "hellforge-prefix");
         prefixPath = new TextBox { Text = defaultPrefix, HorizontalAlignment = HorizontalAlignment.Stretch };
+        string? protonError = null;
+        try { protons = SteamLocator.ProtonVersions(); }
+        catch (Exception error) when (error is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            protons = [];
+            protonError = "Could not read Steam's Proton installations: " + error.Message;
+        }
+        var configuredPath = Environment.GetEnvironmentVariable("PROTON");
+        var configuredProton = !string.IsNullOrEmpty(configuredPath) && File.Exists(configuredPath)
+            ? LocalInstall.FullPath(configuredPath) : null;
+        var selectedIndex = protons.ToList().FindIndex(proton => proton.ScriptPath == configuredProton);
+        if (selectedIndex < 0) selectedIndex = protons.Count - 1;
+        protonChoice = new ComboBox
+        {
+            ItemsSource = protons.Select(proton => proton.Name).ToArray(),
+            SelectedIndex = selectedIndex,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
         status = new TextBlock
         {
-            Text = "This will set up a dedicated Proton prefix, install HellForge, and open its setup wizard.",
+            Text = protonError ?? (protons.Count == 0
+                ? "No Proton versions were found. Install Proton in Steam, then restart this installer."
+                : "Choose the Proton version to prepare the prefix with. The same version will be used for setup and game sessions."),
             TextWrapping = TextWrapping.Wrap,
             Foreground = new SolidColorBrush(Color.Parse("#B8C0CE"))
         };
-        installButton = new Button { Content = "Install and start setup", HorizontalAlignment = HorizontalAlignment.Right };
+        installButton = new Button { Content = "Install and start setup", HorizontalAlignment = HorizontalAlignment.Right, IsEnabled = protons.Count > 0 };
         installButton.Click += async (_, _) => await InstallAndLaunch();
 
         var browseButton = new Button { Content = "Choose…", Margin = new Thickness(8, 0, 0, 0) };
@@ -63,6 +85,8 @@ sealed class LinuxInstallerWindow : Window
                     TextWrapping = TextWrapping.Wrap,
                     Foreground = new SolidColorBrush(Color.Parse("#B8C0CE"))
                 },
+                new TextBlock { Text = "Proton version", FontWeight = FontWeight.SemiBold },
+                protonChoice,
                 new TextBlock { Text = "Proton prefix folder", FontWeight = FontWeight.SemiBold },
                 prefixRow,
                 status,
@@ -90,8 +114,9 @@ sealed class LinuxInstallerWindow : Window
             ValidatePackage(payload);
             var steamRoot = SteamLocator.SteamRoot()
                 ?? throw new InvalidDataException("Steam was not found. Install Steam, start it, sign in, and try again.");
-            var proton = SteamLocator.ProtonScript(steamRoot)
-                ?? throw new InvalidDataException("Proton was not found. Install a Proton version in Steam and try again.");
+            if (protonChoice.SelectedIndex < 0 || protonChoice.SelectedIndex >= protons.Count)
+                throw new InvalidDataException("Choose an installed Proton version before continuing.");
+            var proton = protons[protonChoice.SelectedIndex].ScriptPath;
             var prefixText = prefixPath.Text?.Trim() ?? "";
             if (prefixText.Length == 0) throw new InvalidDataException("Choose a folder for the HellForge prefix.");
             var prefix = Path.GetFullPath(prefixText);
@@ -112,6 +137,7 @@ sealed class LinuxInstallerWindow : Window
             Directory.CreateDirectory(installRoot);
             ZipFile.ExtractToDirectory(payload, installRoot, overwriteFiles: true);
             MakeLinuxFilesExecutable(installRoot);
+            SteamLocator.SaveProtonSelection(new InstallLayout(installRoot), proton);
             if (!File.Exists(launcher))
                 throw new InvalidDataException("The package did not contain app/launcher-linux/HellForge.Launcher.");
 
@@ -122,7 +148,7 @@ sealed class LinuxInstallerWindow : Window
         catch (Exception error)
         {
             Status(error.Message);
-            installButton.IsEnabled = true;
+            installButton.IsEnabled = protons.Count > 0;
         }
     }
 

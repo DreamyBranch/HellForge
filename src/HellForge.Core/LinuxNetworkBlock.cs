@@ -27,7 +27,7 @@ public static class LinuxNetworkBlock
         catch (Exception error) when (error is DllNotFoundException or BadImageFormatException or EntryPointNotFoundException) { return false; }
     }
 
-    public static string MarkerPath(string installRoot) => Path.Combine(installRoot, "network-block", "wfp-block.json");
+    public static string MarkerPath(string installRoot) => new InstallLayout(installRoot).NetworkBlockMarker;
 
     // The installation's network block is set up for this system: the Windows block (its marker and probe), or, inside
     // the Linux namespace, the marker Install left. Setup installs it; the session runner checks it again before the game.
@@ -35,7 +35,8 @@ public static class LinuxNetworkBlock
     {
         if (!File.Exists(MarkerPath(installRoot))) return false;
         if (Requested || OperatingSystem.IsLinux()) return MarkerIsEmulated(installRoot);
-        return !MarkerIsEmulated(installRoot) && File.Exists(Path.Combine(installRoot, "network-block", "NetworkProbe.exe"));
+        return !MarkerIsEmulated(installRoot) && File.Exists(Path.Combine(installRoot, "network-block", "NetworkProbe.exe")) &&
+            new InstallLayout(installRoot) is var install && install.BlockedBackendPort() == install.ComputedBackendPort;
     }
 
     // True when the marker on disk was written by this class (not by the Windows script).

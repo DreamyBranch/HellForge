@@ -1,8 +1,10 @@
+using System.Text.Json;
 using Microsoft.Win32;
 
 namespace HellForge.Core;
 
 public sealed record SteamGame(string ManifestPath, InstallReport Report, bool SupportedBuild);
+public sealed record ProtonVersion(string Name, string ScriptPath);
 
 // Finds HELLDIVERS 2 in the signed-in user's Steam libraries, wherever Steam is installed.
 public static class SteamLocator
@@ -14,17 +16,51 @@ public static class SteamLocator
         if (!string.IsNullOrEmpty(configured))
             return File.Exists(configured) ? LocalInstall.FullPath(configured) : null;
 
+        return ProtonVersions(steamRoot).LastOrDefault()?.ScriptPath;
+    }
+
+    // Installed Proton scripts, in the same order used to choose the default version.
+    public static IReadOnlyList<ProtonVersion> ProtonVersions(string? steamRoot = null)
+    {
+        if (!OperatingSystem.IsLinux()) return [];
         steamRoot ??= SteamRoot();
-        if (steamRoot == null) return null;
-        var common = Path.Combine(steamRoot, "steamapps", "common");
-        var compatibilityTools = Path.Combine(steamRoot, "compatibilitytools.d");
-        var candidates = (Directory.Exists(common)
-                ? Directory.EnumerateDirectories(common, "Proton*").Select(directory => Path.Combine(directory, "proton"))
-                : [])
-            .Concat(Directory.Exists(compatibilityTools)
-                ? Directory.EnumerateDirectories(compatibilityTools).Select(directory => Path.Combine(directory, "proton"))
-                : []);
-        return candidates.Where(File.Exists).OrderBy(path => path, Comparer<string>.Create(CompareProton)).LastOrDefault();
+        var candidates = new List<string>();
+        if (steamRoot != null)
+        {
+            foreach (var library in LocalInstall.FindLibraries(steamRoot))
+            {
+                var common = Path.Combine(library, "steamapps", "common");
+                var compatibilityTools = Path.Combine(library, "compatibilitytools.d");
+                if (Directory.Exists(common))
+                    candidates.AddRange(Directory.EnumerateDirectories(common, "Proton*").Select(directory => Path.Combine(directory, "proton")));
+                if (Directory.Exists(compatibilityTools))
+                    candidates.AddRange(Directory.EnumerateDirectories(compatibilityTools).Select(directory => Path.Combine(directory, "proton")));
+            }
+        }
+        var configured = Environment.GetEnvironmentVariable("PROTON");
+        if (!string.IsNullOrEmpty(configured) && File.Exists(configured)) candidates.Add(LocalInstall.FullPath(configured));
+        return candidates.Where(File.Exists).Distinct(StringComparer.Ordinal)
+            .OrderBy(path => path, Comparer<string>.Create(CompareProton))
+            .Select(path => new ProtonVersion(Path.GetFileName(Path.GetDirectoryName(path))!, LocalInstall.FullPath(path)))
+            .ToArray();
+    }
+
+    public static string? SelectedProtonScript(InstallLayout install)
+    {
+        try
+        {
+            using var selection = JsonDocument.Parse(File.ReadAllText(install.ProtonSelection));
+            return selection.RootElement.ValueKind == JsonValueKind.Object &&
+                selection.RootElement.TryGetProperty("scriptPath", out var path) && path.ValueKind == JsonValueKind.String
+                    ? path.GetString() : null;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return null; }
+    }
+
+    public static void SaveProtonSelection(InstallLayout install, string scriptPath)
+    {
+        if (!File.Exists(scriptPath)) throw new FileNotFoundException("The selected Proton script is missing.", scriptPath);
+        File.WriteAllText(install.ProtonSelection, JsonSerializer.Serialize(new { scriptPath = LocalInstall.FullPath(scriptPath) }) + "\n");
     }
 
     static int CompareProton(string left, string right)

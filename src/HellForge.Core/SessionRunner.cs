@@ -1,10 +1,15 @@
 using System.Diagnostics;
+using System.Globalization;
 
 namespace HellForge.Core;
 
 // A session's choices, as the launcher's Settings page keeps them (launcher-settings.json, ProfileStore) or as another
-// launcher passes them (HellForge.Cli play). The game options are already checked (GameLaunchOptions.Parse).
-public sealed record SessionOptions(bool LocalPlayFab, bool SdkShims, string War, bool EngineLog, bool CrashDump, IReadOnlyList<string> GameOptions);
+// launcher passes them (HellForge.Cli play). The game options are already checked (GameLaunchOptions.Parse). ModSync:
+// the next session's mods after a mod sync (a ModSyncSession file), for that one session. Sandbox: the game at low
+// integrity (ProfileStore.LoadSandbox). FullOwnershipCheck: ask Steam even when a recent ownership check still holds
+// (SteamOwnershipRecord), for that one session.
+public sealed record SessionOptions(bool LocalPlayFab, bool SdkShims, string War, bool EngineLog, bool CrashDump, IReadOnlyList<string> GameOptions,
+    string? ModSync = null, bool Sandbox = false, bool FullOwnershipCheck = false);
 
 // Starts and stops the engine's session runner (HellForge.Session.exe play). It owns every safety step (verified copy,
 // Steam ownership, network block, cleanup); this class only starts it and asks it to stop. It runs without a window and
@@ -31,14 +36,44 @@ public sealed class SessionRunner
             "--profile", Map(Path.TrimEndingDirectorySeparator(Path.GetFullPath(profile.Folder))), "--template", profile.Template };
         if (options.LocalPlayFab) arguments.Add("--local-playfab");
         if (options.SdkShims) arguments.Add("--multiplayer");
-        // the galactic war (ProfileStore.LoadWar): the live war through the mirror, or the all-planets war; the frozen war needs nothing
-        if (options.War == ProfileStore.WarLive) arguments.AddRange(["--live-war", Map(Path.Combine(paths.HostRoot, "live-war.json"))]);
-        else if (options.War == ProfileStore.WarOpen) arguments.Add("--open-war");
+        var warArguments = WarArguments(paths, options.War);
+        if (warArguments.Count == 2 && warArguments[0] == "--live-war") warArguments[1] = Map(warArguments[1]);
+        arguments.AddRange(warArguments);
         if (options.EngineLog) arguments.Add("--engine-log");
         // the player's launch options, for the session runner to add to the game's command line (GameLaunchOptions)
         if (options.GameOptions.Count > 0) arguments.AddRange(["--game-options", GameLaunchOptions.CommandLine(options.GameOptions)]);
+        if (options.ModSync != null) arguments.AddRange(["--mod-sync", options.ModSync]);
+        if (options.Sandbox) arguments.Add("--sandbox");
+        if (options.FullOwnershipCheck) arguments.Add("--full-ownership-check");
         return arguments;
     }
+
+    // The galactic war (ProfileStore.LoadWar): the live war through the mirror, or the all-planets war; the frozen war needs nothing.
+    static List<string> WarArguments(ISessionPaths paths, string war)
+    {
+        if (war == ProfileStore.WarLive) return ["--live-war", Path.Combine(paths.HostRoot, "live-war.json")];
+        if (war != ProfileStore.WarOpen) return [];
+        var arguments = new List<string> { "--open-war" };
+        // its seed (0 needs nothing), and whether it deals its subfactions and SEAF allies (on needs nothing)
+        if (ProfileStore.LoadSubfactionSeed(paths) is var seed and not 0) arguments.AddRange(["--war-seed", seed.ToString(CultureInfo.InvariantCulture)]);
+        if (!ProfileStore.LoadDealSubfactions(paths)) arguments.AddRange(["--war-subfactions", "no"]);
+        if (!ProfileStore.LoadDealSeaf(paths)) arguments.AddRange(["--war-seaf", "no"]);
+        return arguments;
+    }
+
+    // Whether the engine was built with the Steam bridge (the Steamworks SDK): its stand-ins' build.json pins the bridge
+    // build, which a sandboxed session needs (<app>/sdk-shims, beside the session runner's folder).
+    public static bool HasSteamBridge(ISessionPaths paths) =>
+        Path.GetDirectoryName(Path.GetDirectoryName(paths.Session)) is { } app &&
+        SessionFiles.ReadJson(Path.Combine(app, "sdk-shims", "build.json")) is { } build &&
+        SessionFiles.Text(build, "steamBridge") is { Length: > 0 };
+
+    // Whether the sandbox can be offered: an engine built with the Steam bridge, on Windows (under Wine/Proton the game's
+    // block is the network namespace, and the sandbox is untested there).
+    public static bool CanSandbox(ISessionPaths paths) => HasSteamBridge(paths) && !LinuxNetworkBlock.UnderWine && !LinuxNetworkBlock.Requested;
+
+    // Whether a session is sandboxed unless told otherwise: the setting (on unless turned off), where it can be offered.
+    public static bool SandboxByDefault(ISessionPaths paths) => CanSandbox(paths) && ProfileStore.LoadSandbox(paths);
 
     public void Start(ISessionPaths paths, LocalProfile profile, SessionOptions options)
     {
@@ -62,6 +97,11 @@ public sealed class SessionRunner
             start.ArgumentList.Add(paths.Session);
             start.Environment["INSTALL"] = paths.InstallRoot!;
             start.Environment["STEAM_COMPAT_DATA_PATH"] = prefix!;
+            if (SteamLocator.SelectedProtonScript(new InstallLayout(paths.InstallRoot!)) is { } proton)
+            {
+                if (!File.Exists(proton)) throw new InvalidOperationException("The selected Proton version is no longer installed. Choose an installed version in setup.");
+                start.Environment["PROTON"] = proton;
+            }
         }
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         // The mod loader has HellForge.Cli write a full dump at the game's first crash (WriteCrashDump); the game inherits

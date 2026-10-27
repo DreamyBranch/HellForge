@@ -1,7 +1,8 @@
 # HellForge on Linux (Proton)
 
 For players on Linux: the launcher and setup wizard run natively, while the Windows session runner, backend, and game
-run through Proton inside the offline network namespace. Linux support is experimental.
+run through Proton inside the offline network namespace. This page covers setup, isolation and what is untested. Linux
+support is experimental.
 
 Linux support is the work of DreamyBranch and joshua-software-dev, who worked it out and shared it in
 [issue 1](https://github.com/SkyeShade/HellForge/issues/1). Thank you both. The setup steps below, and the dependency
@@ -62,8 +63,9 @@ run and extract its downloaded ZIP with your desktop's archive manager. Extract 
 `HellForge-Linux-Installer.tar.gz` with the archive manager too, then open the extracted folder and launch
 `HellForge.Launcher`. If your desktop asks, choose **Run** or **Allow executing file as program**.
 
-The installer finds Steam and Proton, initializes a dedicated prefix at
-`~/.local/share/hellforge-prefix` (or the folder you choose), extracts HellForge, and opens the native launcher. The
+The installer finds Steam and lists its installed Proton versions for you to choose from. It uses your selection to
+initialize a dedicated prefix at `~/.local/share/hellforge-prefix` (or the folder you choose), extracts HellForge, and
+opens the native launcher. HellForge remembers the choice for setup and game sessions. The
 setup wizard starts automatically for a fresh installation. You do not need to run `unzip`, `chmod`, or `wineboot`
 yourself. This removes the terminal-based installation steps, but it does not automate acquiring the supported game
 build: when that build is not already available, the setup wizard still asks you to enter its three
@@ -111,7 +113,9 @@ some Debian and Ubuntu installs), use that folder.
    "$install/app/launcher-linux/HellForge.Launcher"
    ```
 
-   It reads the installation natively, finds Steam's Linux folders and a Proton install. To select another Proton, set
+   It reads the installation natively and finds Steam's Linux folders and installed Proton versions. At the start of
+   setup, choose the Proton version to use; HellForge remembers that choice for future game sessions. Choose another
+   version later with Settings > Installation > Check and repair. To add a custom Proton outside Steam's folders, set
    `PROTON` to its `proton` script before starting the launcher.
 6. In HellForge, press Start setup. If the supported build is not installed, setup shows three `download_depot`
    commands ([troubleshooting](troubleshooting.md#setup-cannot-find-the-supported-build) describes them). Open Steam's
@@ -189,7 +193,7 @@ HellForge's Uninstall button does not work on Linux; remove it by hand:
 3. If Steam's download of the supported build is still in Steam's folder, delete its `app_553850` folder there if you
    no longer need it.
 
-## How it keeps the game offline
+## How it keeps the game off the internet
 
 On Windows the copied game is kept off the internet by a network block in the Windows Filtering Platform. Wine has
 none, so on Linux the session runner, backend and game run inside a network namespace: a private network with no route
@@ -201,8 +205,8 @@ out. `linux/hellforge-offline.sh` makes it without root, with:
   the Windows block gives, which the session's network probe checks before every session;
 - a self-test that refuses to start if a connection to 1.1.1.1 gets through.
 
-The original Wine launcher, the session runner, the local backend and the game all run inside it. The native launcher
-starts each session through the wrapper; it checks that the wrapper and network-block marker exist. The wrapper enforces
+The native launcher stays outside the namespace. The session runner, local backend and game run inside it. The launcher
+starts each session through the wrapper and checks that the wrapper and network-block marker exist. The wrapper enforces
 the namespace and its self-test, and the session runner checks the isolation before starting the game
 (`src/HellForge.Core/LinuxNetworkBlock.cs`), including for installations copied from Windows.
 
@@ -219,6 +223,11 @@ block.
 The galactic war is fetched just before the namespace is entered (`HellForge.LocalBackend.exe fetch-live-war`), and the
 session serves that copy. With "Follow the live galactic war", the war is the one from launch time and moves on at the
 next launch.
+
+The mod tools are fetched there too, once (`HellForge.Cli.exe mod-tools`: HellForge's pinned Zig, about 90 MB from
+ziglang.org), and again only when a release pins another Zig. Source mods are compiled when a session starts, inside the
+namespace, where the download would be refused ("Access denied. (ziglang.org:443)"). The Mods page's "Install mod tools"
+button cannot fetch them on Linux for the same reason; start HellForge again with `hellforge-linux.sh` instead.
 
 ## One prefix, one network
 
@@ -264,9 +273,12 @@ probe, and a real game session have not been tested here.
 - Co-op on Linux. Friends' games are reached through Steam's networking, which runs in the Steam client outside the
   namespace, but the one test so far did not connect (see [above](#problems-players-have-reported)).
 - Steam as a Flatpak or Snap (its own `/tmp` and paths), and the Steam Deck (no `socat` by default), are untested.
-- The Steam ownership check under Proton. Native setup and every session run it, as on Windows. The probe must confirm
-  the game on the signed-in Steam account, or setup and the session stop. It has not yet been run on a Linux machine,
-  so if setup or a session stops at "The ownership check did not pass", please report it with the logs.
+- The Steam ownership check under Proton. Setup and sessions run it, as on Windows (a session reuses a check that passed
+  within 7 days for the same installation, account and build, where it can see Steam's signed-in account): under Wine, HellForge starts
+  its Steam probe (`app\steamprobe\HellForge.SteamProbe.exe`) directly, because Wine's `powershell.exe` runs nothing.
+  The probe must confirm the game on the signed-in Steam account, or setup and the session stop. It has not yet been
+  run on a Linux machine, so if setup or a session stops at "The ownership check did not pass", please report it with
+  the logs.
 
 ## Helping with Linux
 

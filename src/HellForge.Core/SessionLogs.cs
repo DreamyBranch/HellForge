@@ -78,6 +78,20 @@ public static partial class SessionLogs
 
     public sealed record Exported(string Zip, int Files, int Skipped);
 
+    // Whether a file of a run (its path in the run) goes into the zip. A sandboxed session keeps the game's AppData and temp
+    // (game/environment) and its user data (game/userdata: saves, the cloud folder, the shader cache) in its run folder
+    // (docs/steam-bridge.md, "The rest of a low-integrity session"); they are the player's, not logs, and another
+    // program the game started may have left its own there (a browser's profile, on one tester's PC). Only the game's
+    // logs and crash data of game/userdata go.
+    static bool InExport(string relative)
+    {
+        var parts = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (parts.Length < 3 || !parts[0].Equals("game", StringComparison.OrdinalIgnoreCase)) return true;
+        if (parts[1].Equals("environment", StringComparison.OrdinalIgnoreCase)) return false;
+        return !parts[1].Equals("userdata", StringComparison.OrdinalIgnoreCase) ||
+            parts[2].Equals("logs", StringComparison.OrdinalIgnoreCase) || parts[2].Equals("crash_data", StringComparison.OrdinalIgnoreCase);
+    }
+
     // A session's logs zipped to send to whoever helps (the launcher's Save logs to Desktop, HellForge.Cli logs --export).
     // Text files and names in it do not name the PC (Privacy), whoever wrote them (a mod's own log, the game's console
     // logs); other files (a crash dump) go in as they are. A running session still has its logs open, so each file is
@@ -86,10 +100,48 @@ public static partial class SessionLogs
     // come from gameLogs (the installation's userdata/logs).
     public static Exported Export(string run, string? gameLogs, string target)
     {
-        // programs are left out: the run's steam-link folder holds a copy of Valve's steam_api64.dll, which is no log
+        int written, skipped;
+        using (var zip = System.IO.Compression.ZipFile.Open(target, System.IO.Compression.ZipArchiveMode.Create))
+            (written, skipped) = AddTo(zip, run, gameLogs, new(Privacy.Current.ApplyBytes, Privacy.Scrub, "", Dumps: true));
+        return new(target, written, skipped);
+    }
+
+    // How a run's files go into a zip: the text files' scrub, the names' scrub, the folder they go in (a crash report's
+    // logs/) and whether crash dumps (.dmp) go too.
+    internal sealed record ExportScrub(Func<byte[], byte[]> Bytes, Func<string, string> Name, string Prefix, bool Dumps);
+
+    internal static (int Written, int Skipped) AddTo(System.IO.Compression.ZipArchive zip, string run, string? gameLogs, ExportScrub scrub)
+    {
+        int written = 0, skipped = 0;
+        foreach (var (file, name) in ExportFiles(run, gameLogs))
+        {
+            if (!scrub.Dumps && Path.GetExtension(file).Equals(".dmp", StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                using var source = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                var entry = zip.CreateEntry(scrub.Prefix + scrub.Name(name).Replace(Path.DirectorySeparatorChar, '/'), System.IO.Compression.CompressionLevel.Optimal);
+                using var destination = entry.Open();
+                if (Privacy.IsText(file) && source.Length < 200L * 1024 * 1024)
+                {
+                    using var buffer = new MemoryStream();
+                    source.CopyTo(buffer);
+                    destination.Write(scrub.Bytes(buffer.ToArray()));
+                }
+                else source.CopyTo(destination);
+                written++;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { skipped++; }
+        }
+        return (written, skipped);
+    }
+
+    static List<(string File, string Name)> ExportFiles(string run, string? gameLogs)
+    {
+        // programs are left out (the run's steam-link folder holds a copy of Valve's steam_api64.dll, which is no log), and
+        // so is what a sandboxed game kept of the player's (InExport)
         var files = Directory.EnumerateFiles(run, "*", SearchOption.AllDirectories)
             .Where(file => !Path.GetExtension(file).Equals(".dll", StringComparison.OrdinalIgnoreCase) &&
-                           !Path.GetExtension(file).Equals(".exe", StringComparison.OrdinalIgnoreCase))
+                           !Path.GetExtension(file).Equals(".exe", StringComparison.OrdinalIgnoreCase) && InExport(Path.GetRelativePath(run, file)))
             .Select(file => (file, name: Path.Combine(Path.GetFileName(run), Path.GetRelativePath(run, file)))).ToList();
         if (!Directory.Exists(Path.Combine(run, "engine-logs")) && gameLogs != null && Directory.Exists(gameLogs))
         {
@@ -98,24 +150,6 @@ public static partial class SessionLogs
                 .Where(f => f.LastWriteTimeUtc >= started && f.Length < 200L * 1024 * 1024)
                 .Select(f => (f.FullName, Path.Combine(Path.GetFileName(run), "engine-logs", "logs-" + f.Name))));
         }
-        int written = 0, skipped = 0;
-        using (var zip = System.IO.Compression.ZipFile.Open(target, System.IO.Compression.ZipArchiveMode.Create))
-            foreach (var (file, name) in files)
-                try
-                {
-                    using var source = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                    var entry = zip.CreateEntry(Privacy.Scrub(name).Replace(Path.DirectorySeparatorChar, '/'), System.IO.Compression.CompressionLevel.Optimal);
-                    using var destination = entry.Open();
-                    if (Privacy.IsText(file) && source.Length < 200L * 1024 * 1024)
-                    {
-                        using var buffer = new MemoryStream();
-                        source.CopyTo(buffer);
-                        destination.Write(Privacy.Current.ApplyBytes(buffer.ToArray()));
-                    }
-                    else source.CopyTo(destination);
-                    written++;
-                }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { skipped++; }
-        return new(target, written, skipped);
+        return files;
     }
 }
