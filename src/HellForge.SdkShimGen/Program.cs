@@ -208,22 +208,7 @@ static int VerifyForwardManifest(string manifestPath, string module, string hand
     var manifest = SteamExportsManifest.Read(manifestPath);
     var own = OwnFunctions(handwritten);
     var expected = manifest.Exports.ToDictionary(export => export.Name, export => export.Ordinal, StringComparer.Ordinal);
-    var actual = PeTables.Exports(standIn).ToDictionary(export => export.Name, export => export.Ordinal, StringComparer.Ordinal);
-    var forwarders = PeTables.Forwarders(standIn);
-    var problems = new List<string>();
-    foreach (var (name, ordinal) in expected)
-    {
-        if (!actual.TryGetValue(name, out var got) || got != ordinal) { problems.Add($"missing export {name} @{ordinal}"); continue; }
-        forwarders.TryGetValue(name, out var target);
-        if (own.Contains(name) ? target != null : target != $"{module}.{name}")
-            problems.Add($"{name} {(own.Contains(name) ? "should be code but forwards to " + target : "should forward to " + module + "." + name)}");
-    }
-    problems.AddRange(actual.Keys.Where(name => !expected.ContainsKey(name)).Select(name => "extra export " + name));
-    var modules = PeTables.ImportedModules(standIn);
-    problems.AddRange(modules.Where(m => !IsSystemModule(m)).Select(m => "non-system import " + m));
-    Console.WriteLine($"{Path.GetFileName(standIn)}: {actual.Count}/{expected.Count} exports, {forwarders.Count} forwarded; imports {string.Join(", ", modules)}");
-    foreach (var problem in problems.Take(20)) Console.Error.WriteLine("  " + problem);
-    return problems.Count == 0 ? 0 : 1;
+    return VerifyForwardTable(expected, module, own, standIn);
 }
 
 // Same names and ordinals as the original; the hand-written ones are code, all others forward to module.sameName.
@@ -231,6 +216,11 @@ static int VerifyForward(string original, string module, string handwritten, str
 {
     var own = OwnFunctions(handwritten);
     var expected = PeTables.Exports(original).ToDictionary(e => e.Name, e => e.Ordinal, StringComparer.Ordinal);
+    return VerifyForwardTable(expected, module, own, standIn);
+}
+
+static int VerifyForwardTable(Dictionary<string, uint> expected, string module, HashSet<string> own, string standIn)
+{
     var actual = PeTables.Exports(standIn).ToDictionary(e => e.Name, e => e.Ordinal, StringComparer.Ordinal);
     var forwarders = PeTables.Forwarders(standIn);
     var problems = new List<string>();

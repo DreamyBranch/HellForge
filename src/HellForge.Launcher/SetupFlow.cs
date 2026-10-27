@@ -291,9 +291,10 @@ public partial class MainWindow
         var ownershipSteamApi = steamApi ?? throw new InvalidDataException("The supported build's Steam API library was not found.");
         try
         {
-            exit = await Task.Run(() => SteamOwnershipCheck.RunProbeThroughLinuxWrapper(wrapper, proton, install.Root,
-                WinePath.PrefixFromInstallRoot(install.Root), steamRoot, probe, ownershipSteamApi, Path.Combine(install.Temp, "ownership"),
-                evidence, TimeSpan.FromSeconds(60)));
+            var request = new SteamOwnershipCheck.LinuxProbeRequest(wrapper, proton, install.Root,
+                WinePath.PrefixFromInstallRoot(install.Root), steamRoot, probe, ownershipSteamApi,
+                Path.Combine(install.Temp, "ownership"), evidence, TimeSpan.FromSeconds(60));
+            exit = await Task.Run(() => SteamOwnershipCheck.RunProbeThroughLinuxWrapper(request));
             errorMessage = "";
         }
         catch (InvalidDataException error) { exit = 1; errorMessage = error.Message; }
