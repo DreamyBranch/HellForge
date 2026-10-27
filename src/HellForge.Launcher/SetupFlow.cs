@@ -299,10 +299,19 @@ public partial class MainWindow
             throw new SetupStopped("The ownership check did not pass: " +
                 (errorMessage.Length > 0 ? errorMessage : $"exit code {exit}.") +
                 " Make sure Steam is running and signed in to an account that owns HELLDIVERS 2.");
-        SetRow(step, true, "Steam confirmed the game on this account.");
 
         setupCancel = new();
         var token = setupCancel.Token;
+        SetRow(step, true, "Steam confirmed ownership. Preparing the pinned mod tools...");
+        SetupPauseButton.Content = "Cancel preparation";
+        SetupPauseButton.IsVisible = true;
+        var modToolsReady = await PrepareLinuxModTools(wrapper, proton, install, steamRoot, token);
+        SetupPauseButton.IsVisible = false;
+        SetupPauseButton.Content = "Pause copying";
+        SetRow(step, true, modToolsReady
+            ? "Steam confirmed ownership; pinned mod tools are ready."
+            : "Steam confirmed ownership. Optional mod tools could not be downloaded; see logs/linux-session-wrapper.log.");
+
         SetStep(SetupStep.Copy);
         string copied;
         if (existingGame)
@@ -336,6 +345,36 @@ public partial class MainWindow
         CreateLinuxDesktopShortcut(install);
         await SyncBundledMods(install);
         ReadyToPlay();
+    }
+
+    static async Task<bool> PrepareLinuxModTools(string wrapper, string proton, InstallLayout install, string steamRoot,
+        CancellationToken cancellationToken)
+    {
+        var start = new ProcessStartInfo("bash")
+        {
+            WorkingDirectory = install.Root,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        start.ArgumentList.Add(wrapper);
+        start.Environment["INSTALL"] = install.Root;
+        start.Environment["PROTON"] = proton;
+        start.Environment["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = steamRoot;
+        start.Environment["STEAM_COMPAT_DATA_PATH"] = WinePath.PrefixFromInstallRoot(install.Root);
+        start.Environment["HELLFORGE_SKIP_LIVE_WAR"] = "1";
+        start.Environment["HELLFORGE_PREPARE_MOD_TOOLS_ONLY"] = "1";
+        using var process = Process.Start(start) ?? throw new IOException("The Linux mod-tools preparation did not start.");
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMinutes(16));
+        try { await process.WaitForExitAsync(timeout.Token); }
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException) { }
+            cancellationToken.ThrowIfCancellationRequested();
+            return false;
+        }
+        return process.ExitCode == 0;
     }
 
     void CreateLinuxDesktopShortcut(InstallLayout install)

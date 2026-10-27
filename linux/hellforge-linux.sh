@@ -154,6 +154,16 @@ if [ -n "$pin" ] && ! zigReady; then
   fi
 fi
 
+# Setup calls the wrapper after Steam confirms ownership to prepare the optional tools without launching a session.
+if [ "${HELLFORGE_PREPARE_MOD_TOOLS_ONLY:-}" = 1 ]; then
+  if [ -n "$pin" ] && zigReady; then
+    echo "Mod tools are ready."
+    exit 0
+  fi
+  echo "Could not prepare the pinned mod tools." >&2
+  exit 1
+fi
+
 # Run through bash, so the scripts work without their executable bit (lost when copied from Windows or unpacked by setup).
 echo "Entering the offline network namespace."
 if bash "$here/hellforge-offline.sh" bash "$here/hf-inner.sh" "$@"; then
