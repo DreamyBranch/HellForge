@@ -12,7 +12,7 @@ On `dev`, since 0.3.0-beta.
 
 - **Experimental native Linux launcher and setup.** The launcher runs natively while the game stays under Proton in
   HellForge's offline network namespace. Setup confirms Steam ownership before copying the game and fetching the
-  optional mod tools; Settings can remove the HellForge installation and its desktop shortcut without deleting the
+  mod tools; Settings can remove the HellForge installation and its desktop shortcut without deleting the
   Proton prefix (#90).
 
 ## 0.3.0-beta (2026-10-26)
