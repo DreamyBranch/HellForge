@@ -6,6 +6,8 @@
 #   ./hellforge-linux-install.sh run                               start HellForge (hellforge-linux.sh with the right settings)
 #   ./hellforge-linux-install.sh proton                            pick a different Proton (remembered for next time)
 #   ./hellforge-linux-install.sh where                             show where the prefix, install, Steam and Proton are
+#   ./hellforge-linux-install.sh build <mod-folder>                build a HellForge mod with a native Linux Zig and install it into
+#                                                                  HellForge's mods/ folder (replaces build-hf-mod.fish)
 #   ./hellforge-linux-install.sh sdk [mod-folder]                  show the mod SDK folder; with a mod folder, copy the SDK headers
 #                                                                  (hellforge_mod.h ...) into <mod-folder>/src so the mod builds
 #   ./hellforge-linux-install.sh backup [folder]                   back up the whole prefix (default: ~/hellforge-backups) and list the backups
@@ -31,6 +33,7 @@
 #   STEAM_ROOT  the Steam client's folder             (default: found; asks if there are several)
 #   SETUP       the HellForge-Setup.exe               (or give it as an argument; otherwise ./ and ~/Downloads are searched)
 #   BACKUP_DIR  where backups go                      (default ~/hellforge-backups)
+#   ZIG         the native Linux zig for `build`      (default ~/.local/share/zig-native/zig, else zig from PATH)
 set -euo pipefail
 
 APP=553850
@@ -720,6 +723,85 @@ cmd_sdk() {  # $1 = optional mod folder (the one that holds src/)
   if [ "$n" -eq 0 ]; then echo "Nothing to copy: the headers in $dst are already up to date."; else echo "Done: $n file(s). Build the mod again."; fi
 }
 
+# ---- build ----------------------------------------------------------------------------------------------------------
+# Builds a HellForge mod with a native Linux Zig instead of HellForge's bundled Windows zig.exe (which hits a Wine
+# NtLockFile bug: manifest_create Unexpected on every build). Reads the mod's CMakeLists.txt for the language and the
+# source list (hellforge_add_mod(...)); without one, uses src/*.cpp or src/*.c and the "dll" name in hellforge-mod.json.
+# Compiles to a Windows DLL and installs it, with hellforge-mod.json and data/, into <HellForge>/mods/<mod-folder-name>/.
+cmd_build() {  # $1 = the mod folder (the one with hellforge-mod.json)
+  load_settings
+  local proj="${1:-}" hf sdk zig is_cxx=0 name="" dll dllname lang_line call inner f s folder target
+  local sources=() toks=() cpp=() cfiles=() src_args=()
+  [ -n "$proj" ] || die "usage: $(basename "$0") build <mod-folder>"
+  [ -d "$proj" ] || die "$proj is not a folder"
+  proj="$(realpath "$proj")"
+  [ -f "$proj/hellforge-mod.json" ] || die "no hellforge-mod.json in $proj"
+
+  hf="$(hf_dir)"
+  [ -n "$hf" ] || die "HellForge is not installed in $PFX; run: $(basename "$0") install"
+  sdk="$(sdk_dir)"
+  [ -n "$sdk" ] || die "mod SDK (hellforge_mod.h) not found under $hf"
+
+  zig="${ZIG:-$HOME/.local/share/zig-native/zig}"
+  [ -x "$zig" ] || zig="$(command -v zig 2>/dev/null || true)"
+  [ -n "$zig" ] && [ -x "$zig" ] || die "native Linux zig not found; install it to ~/.local/share/zig-native/zig, have 'zig' in PATH, or set ZIG"
+
+  if [ -f "$proj/CMakeLists.txt" ]; then
+    lang_line="$(grep -m1 '^project(' "$proj/CMakeLists.txt" || true)"
+    case "$lang_line" in *CXX*) is_cxx=1 ;; esac
+    # the first hellforge_add_mod(...) call, which may span several lines
+    call="$(awk '/hellforge_add_mod\(/{f=1} f{printf "%s ", $0} f&&/\)/{exit}' "$proj/CMakeLists.txt")"
+    [ -n "$call" ] || die "couldn't find hellforge_add_mod(...) in CMakeLists.txt"
+    inner="${call#*hellforge_add_mod(}"
+    inner="${inner%%)*}"
+    read -ra toks <<< "$inner" || true
+    name="${toks[0]:-}"
+    sources=("${toks[@]:1}")
+    [ -n "$name" ] && [ "${#sources[@]}" -gt 0 ] || die "couldn't read the mod name and sources from hellforge_add_mod(...)"
+  else
+    # no CMakeLists.txt: everything comes from hellforge-mod.json and src/*.cpp (or src/*.c)
+    dllname="$(grep -Po '"dll"\s*:\s*"\K[^"]+' "$proj/hellforge-mod.json" || true)"
+    [ -n "$dllname" ] || die "no \"dll\" entry in $proj/hellforge-mod.json"
+    name="${dllname%.dll}"
+    mapfile -t cpp < <(find "$proj/src" -maxdepth 1 -name '*.cpp' 2>/dev/null | sort)
+    if [ "${#cpp[@]}" -gt 0 ]; then
+      is_cxx=1
+      for f in "${cpp[@]}"; do sources+=("${f#"$proj"/}"); done
+    else
+      mapfile -t cfiles < <(find "$proj/src" -maxdepth 1 -name '*.c' 2>/dev/null | sort)
+      for f in "${cfiles[@]}"; do [ -z "$f" ] || sources+=("${f#"$proj"/}"); done
+    fi
+    [ "${#sources[@]}" -gt 0 ] || die "no CMakeLists.txt and no src/*.c or src/*.cpp found"
+  fi
+
+  echo "mod: $name  (c++: $is_cxx)"
+  echo "sources: ${sources[*]}"
+  echo "sdk: $sdk"
+
+  dll="$proj/$name.dll"
+  for s in "${sources[@]}"; do src_args+=("$proj/$s"); done
+
+  if [ "$is_cxx" = 1 ]; then
+    "$zig" c++ -target x86_64-windows-gnu -shared -std=c++17 -Wall -Werror -Wno-unused-parameter -s \
+      -I "$sdk" -o "$dll" "${src_args[@]}" || die "build failed"
+  else
+    "$zig" cc -target x86_64-windows-gnu -shared -std=c11 -Wall -Werror -Wno-unused-parameter -s \
+      -I "$sdk" -o "$dll" "${src_args[@]}" || die "build failed"
+  fi
+
+  ! command -v file >/dev/null || file "$dll"
+
+  folder="$(basename "$proj")"
+  target="$hf/mods/$folder"
+  mkdir -p "$target"
+  cp -f -- "$proj/hellforge-mod.json" "$dll" "$target/"
+  if [ -d "$proj/data" ]; then
+    mkdir -p "$target/data"
+    cp -r -- "$proj/data/." "$target/data/"
+  fi
+  echo "installed to $target"
+}
+
 # ---- where ----------------------------------------------------------------------------------------------------------
 cmd_where() {
   load_settings
@@ -1001,6 +1083,7 @@ Usage: $(basename "$0") <command>
   restore [backup-file]          restore the prefix from a backup (only if there is no prefix)
   update [HellForge-Setup.exe]   back up the HellForge folder, then run the newest setup in the prefix
   where                          show where the prefix, install, Steam and Proton are
+  build <mod-folder>             build a mod with native Linux Zig and install it into HellForge's mods/
   sdk [mod-folder]               show the mod SDK folder; copy its headers into <mod-folder>/src
   shortcut                       add an app-menu entry and a 'hellforge-linux' command
   uninstall                      remove what this script set up (asks first)
@@ -1019,6 +1102,7 @@ case "${1:-}" in
   update)             shift || true; cmd_update "${1:-}" ;;
   where|prefix|info)  cmd_where ;;
   sdk)                shift || true; cmd_sdk "${1:-}" ;;
+  build)              shift || true; cmd_build "${1:-}" ;;
   shortcut)           cmd_shortcut ;;
   uninstall|remove)   cmd_uninstall ;;
   help|-h|--help)     usage ;;
