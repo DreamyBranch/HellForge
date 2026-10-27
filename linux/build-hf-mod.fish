@@ -7,7 +7,7 @@
 # src/<dll-name>.c file (from hellforge-mod.json) for mods with no CMake
 # project. Compiles to a DLL and installs it into mods/.
 
-set HF "/.local/share/hellforge-prefix/pfx/drive_c/users/steamuser/Documents/HellForge"
+set HF "~/.local/share/hellforge-prefix/pfx/drive_c/users/steamuser/Documents/HellForge/app/sdk"
 set ZIG "$HOME/.local/share/zig-native/zig"
 
 if test (count $argv) -ne 1
