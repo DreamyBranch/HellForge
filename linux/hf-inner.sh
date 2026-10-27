@@ -36,8 +36,12 @@ for argument in "$@"; do
 done
 session_file="$INSTALL/logs/play-session.json"
 previous_run=""
+read_run_id() {
+  [ -f "$session_file" ] || return 0
+  sed -n 's/.*"runId"[[:space:]]*:[[:space:]]*"\([[:xdigit:]-]*\)".*/\1/p' "$session_file" | head -n 1
+}
 if [ "$session_run" = 1 ]; then
-  previous_run="$(sed -n 's/.*"runId"[[:space:]]*:[[:space:]]*"\([[:xdigit:]-]*\)".*/\1/p' "$session_file" 2>/dev/null | head -n 1)"
+  previous_run="$(read_run_id)"
 fi
 program="${1:-$INSTALL/HellForge.exe}"
 echo "hf-inner: launching $(basename -- "$program") through Proton."
@@ -55,7 +59,7 @@ if [ "${HELLFORGE_WAIT_FOR_PROCESSES:-1}" != 0 ]; then
   if [ "$session_run" = 1 ]; then
     run_id=""
     for _ in $(seq 1 60); do
-      run_id="$(sed -n 's/.*"runId"[[:space:]]*:[[:space:]]*"\([[:xdigit:]-]*\)".*/\1/p' "$session_file" 2>/dev/null | head -n 1)"
+      run_id="$(read_run_id)"
       if [[ "$run_id" =~ ^[[:xdigit:]]{32}$ ]] && [ "$run_id" != "$previous_run" ]; then break; fi
       run_id=""
       sleep 1
