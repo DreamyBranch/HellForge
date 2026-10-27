@@ -31,7 +31,11 @@ previous_run=""
 if [ "$session_run" = 1 ]; then
   previous_run="$(sed -n 's/.*"runId"[[:space:]]*:[[:space:]]*"\([[:xdigit:]-]*\)".*/\1/p' "$session_file" 2>/dev/null | head -n 1)"
 fi
-if [ $# -gt 0 ]; then "$PROTON" run "$@" || true; else "$PROTON" run "$INSTALL/HellForge.exe" || true; fi
+program="${1:-$INSTALL/HellForge.exe}"
+echo "Starting $(basename -- "$program") through Proton."
+proton_status=0
+if [ $# -gt 0 ]; then "$PROTON" run "$@" || proton_status=$?; else "$PROTON" run "$program" || proton_status=$?; fi
+echo "Proton returned exit code $proton_status."
 
 # "proton run" returns as soon as the launcher has started, but the launcher keeps running (and HellForge.Cli play
 # returns once the session has started).
@@ -48,11 +52,13 @@ if [ "${HELLFORGE_WAIT_FOR_PROCESSES:-1}" != 0 ]; then
       sleep 1
     done
     if [ -z "$run_id" ]; then
-      echo "The session runner did not publish a new run record; cannot confirm session cleanup." >&2
+      echo "The session runner did not publish a new run record within 60 seconds; cannot confirm session cleanup (Proton exit code $proton_status)." >&2
       exit 1
     fi
+    echo "Session runner published run $run_id; waiting for its result record."
     result="$INSTALL/logs/sessions/$run_id/result.json"
     while [ ! -f "$result" ] || ! grep -q '"completedUtc"[[:space:]]*:' "$result"; do sleep 2; done
+    echo "Session run $run_id completed."
   else
     pat='HellForge\.(Session|Cli|SteamProbe)|LocalBackend|helldivers2'
     for _ in $(seq 1 30); do pgrep -u "$(id -u)" -f "$pat" >/dev/null && break; sleep 1; done

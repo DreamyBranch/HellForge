@@ -91,7 +91,10 @@ fi
 : "${PROTON:?PROTON is not set and no Proton was found in Steam: install one in Steam, or set PROTON to a proton script, e.g. .../compatibilitytools.d/<name>/proton}"
 [ -x "$PROTON" ] || { echo "PROTON is not a proton script that can be run: $PROTON" >&2; exit 1; }
 export PROTON
+: "${STEAM_COMPAT_APP_ID:=553850}"
+export STEAM_COMPAT_APP_ID
 echo "HellForge: $INSTALL with $PROTON (prefix $STEAM_COMPAT_DATA_PATH)"
+echo "Steam compatibility app ID: $STEAM_COMPAT_APP_ID"
 
 # Where only allowed programs may make a user namespace (Ubuntu 24.04 and later), say so now rather than after the war
 # fetch; hellforge-offline.sh checks the same.

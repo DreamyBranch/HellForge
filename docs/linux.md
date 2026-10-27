@@ -139,6 +139,7 @@ HellForge's local files. Do not start a session runner directly through Proton o
 | `INSTALL` | the installation the script is in |
 | `STEAM_COMPAT_CLIENT_INSTALL_PATH` | the first of `~/.local/share/Steam`, `~/.steam/debian-installation`, `~/.steam/steam` and Flatpak's and Snap's Steam folders that has a `steamapps` folder |
 | `STEAM_COMPAT_DATA_PATH` | the prefix the installation is in (the part of its path before `/pfx/drive_c/`); for an installation outside a prefix, HELLDIVERS 2's prefix, `steamapps/compatdata/553850` |
+| `STEAM_COMPAT_APP_ID` | `553850` (HELLDIVERS 2), unless explicitly set otherwise |
 
 It starts the bridge to Steam itself and stops it when the wrapped program closes. A bridge already running
 (`hf-bridge-host.sh`) is used as it is.
